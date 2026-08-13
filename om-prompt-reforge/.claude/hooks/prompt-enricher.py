@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
-"""prompt-enricher — UserPromptSubmit hook, enrichit les prompts non-triviaux
-via une reformulation LLM (Haiku) injectee en additionalContext.
+"""prompt-enricher — UserPromptSubmit hook that enriches non-trivial prompts
+with a one-sentence LLM (Haiku) reformulation, injected via additionalContext.
 
-Architecture hybride (decision utilisateur, cf.
-docs/superpowers/specs/2026-08-08-eval-hook-clarifier.md) :
-1. Gate 0-LLM : reutilise prompt-router.classify() -- si le prompt est deja
-   trivial/bypass, on sort immediatement, ZERO appel LLM (cout/latence nuls).
-2. Si non-trivial : un appel Haiku isole (mecanisme valide 21/21 sans timeout,
-   --agents inline + --allowedTools "" + disableAllHooks, maxTurns:1,
-   effort:low, tools:[]) produit une reformulation en une phrase.
-3. Ce hook NE BLOQUE JAMAIS (decision utilisateur explicite) : il ne fait
-   qu'enrichir via additionalContext. Le blocage sur risque destructif reste
-   gere par git-safety.py (0-LLM, deja fiable) -- pas de seconde ligne de
-   defense LLM ici, pour eviter le non-determinisme observe en V6/V7.
+Hybrid architecture (see README, "The engineering story"):
+1. 0-LLM gate: reuses prompt-router.classify() -- if the prompt is already
+   trivial/bypass, we return immediately, ZERO LLM call (no cost, no latency).
+2. If non-trivial: one isolated Haiku call (inline --agents + --allowedTools ""
+   + disableAllHooks, maxTurns:1, effort:low, tools:[]) produces a one-sentence
+   reformulation, in the SAME language as the prompt.
+3. This hook NEVER BLOCKS: it only enriches via additionalContext. It has no
+   second, LLM-based line of defense (to avoid non-determinism) -- keep any
+   destructive-command guard as a separate 0-LLM hook.
 
-Fail-safe : toute erreur/timeout -> silence total, exit 0, prompt inchange.
+Fail-safe: any error/timeout -> total silence, exit 0, prompt unchanged.
 """
 import sys
 import os
@@ -26,21 +24,22 @@ import importlib.util
 
 HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Modele Haiku de la reformulation. Surchargeable sans editer le code (voir README) :
+# Haiku model used for the reformulation. Override without editing the code (see README):
 #   export FORGE_ENRICHER_MODEL="claude-haiku-4-5-..."
 ENRICHER_MODEL = os.environ.get("FORGE_ENRICHER_MODEL", "claude-haiku-4-5-20251001")
 
 PROMPT_BODY = (
-    "Tu es un middleware de clarification ultra-rapide. Une seule sortie par appel, jamais de dialogue.\n"
-    "Tache unique : REFORMULATION -- reecris le message utilisateur en une phrase enrichie qui rend "
-    "l'intention explicite (objectif reel, portee implicite, contrainte sous-entendue). Si le message "
-    "est deja trivial/complet, recopie-le tel quel, n'invente rien.\n"
-    "Interdictions absolues :\n"
-    "- N'utilise JAMAIS d'outil. Ne consulte AUCUN fichier. Decide uniquement a partir du texte du message.\n"
-    "- Ne pose AUCUNE question. Pas de dialogue, pas d'explication longue.\n"
-    "Reponds en UNE seule ligne, format strict :\n"
-    "REFORMULATION: <phrase enrichie>\n"
-    "Rien d'autre. Pas de preambule, pas de conclusion."
+    "You are an ultra-fast clarification middleware. One output per call, never a dialogue.\n"
+    "Single task: REFORMULATION -- rewrite the user's message as one enriched sentence that makes "
+    "the intent explicit (real goal, implicit scope, unstated constraint). If the message is already "
+    "trivial/complete, copy it verbatim, invent nothing.\n"
+    "Reply in the SAME language as the user's message (French in -> French out, English in -> English out).\n"
+    "Hard rules:\n"
+    "- NEVER use a tool. Read NO file. Decide only from the message text.\n"
+    "- Ask NO question. No dialogue, no long explanation.\n"
+    "Answer on ONE single line, strict format:\n"
+    "REFORMULATION: <enriched sentence>\n"
+    "Nothing else. No preamble, no conclusion."
 )
 
 
@@ -56,7 +55,7 @@ def _load_classify():
 def _agents_json():
     return json.dumps({
         "prompt-enricher-runtime": {
-            "description": "Reformulation enrichie ultra-rapide.",
+            "description": "Ultra-fast enriched reformulation.",
             "prompt": PROMPT_BODY,
             "tools": [],
             "model": ENRICHER_MODEL,
@@ -67,11 +66,11 @@ def _agents_json():
 
 
 def _trace_enrich(rec):
-    """Trace un appel Haiku (coût/latence) dans .claude/logs/enricher-trace.jsonl.
+    """Trace a Haiku call (cost/latency) into .claude/logs/enricher-trace.jsonl.
 
-    Comble l'angle mort : cet appel tourne avec `disableAllHooks:true`, donc session-logger
-    ne le voit pas. Fail-safe absolu ; n'écrit JAMAIS sur stdout (le stdout de ce hook est
-    injecté dans le contexte du modèle)."""
+    Covers the blind spot: this call runs with disableAllHooks:true, so a session
+    logger would not see it. Absolutely fail-safe; NEVER writes to stdout (this
+    hook's stdout is injected into the model's context)."""
     try:
         root = os.environ.get("CLAUDE_PROJECT_DIR") or os.path.dirname(os.path.dirname(HOOKS_DIR))
         logdir = os.path.join(root, ".claude", "logs")
@@ -92,7 +91,7 @@ def enrich(prompt_text, timeout=25):
     }
     try:
         proc = subprocess.run(
-            ["claude", "-p", f"Message utilisateur: {prompt_text}",
+            ["claude", "-p", f"User message: {prompt_text}",
              "--agents", _agents_json(),
              "--agent", "prompt-enricher-runtime",
              "--allowedTools", "",
@@ -105,7 +104,7 @@ def enrich(prompt_text, timeout=25):
         trace["latency_ms"] = round((time.monotonic() - t0) * 1000)
         trace["ok"] = text.startswith("REFORMULATION:")
         trace["result_chars"] = len(text)
-        # Métriques de coût/usage si le CLI les fournit (défensif : seulement si présentes).
+        # Cost/usage metrics if the CLI provides them (defensive: only if present).
         if isinstance(outer, dict):
             for k in ("total_cost_usd", "duration_ms", "num_turns", "is_error"):
                 if k in outer:
@@ -139,9 +138,9 @@ def main() -> int:
         classify = _load_classify()
         if not classify(prompt):
             sys.stdout.write(json.dumps({
-                "systemMessage": f"{pink}🕉️ prompt-enricher : trivial, gate 0-LLM -> aucun appel Haiku{reset}",
+                "systemMessage": f"{pink}🕉️ prompt-enricher: trivial, 0-LLM gate -> no Haiku call{reset}",
             }))
-            return 0  # trivial/bypass -> aucun appel LLM
+            return 0  # trivial/bypass -> no LLM call
     except Exception:
         return 0
 
@@ -149,16 +148,16 @@ def main() -> int:
         reformulation = enrich(prompt)
         if not reformulation or reformulation == prompt:
             sys.stdout.write(json.dumps({
-                "systemMessage": f"{pink}🕉️ prompt-enricher : reformulation identique au prompt, rien injecte{reset}",
+                "systemMessage": f"{pink}🕉️ prompt-enricher: reformulation identical to prompt, nothing injected{reset}",
             }))
             return 0
         out = {
-            "systemMessage": f"{pink}🕉️ Reformulation (Haiku) : {reformulation}{reset}",
+            "systemMessage": f"{pink}🕉️ Reforge (Haiku): {reformulation}{reset}",
             "hookSpecificOutput": {
                 "hookEventName": "UserPromptSubmit",
                 "additionalContext": (
                     "<prompt_context>\n"
-                    f"Reformulation enrichie (Haiku, non bloquant) : {reformulation}\n"
+                    f"Enriched reforge (Haiku, non-blocking): {reformulation}\n"
                     "</prompt_context>"
                 ),
             }

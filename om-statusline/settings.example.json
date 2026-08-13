@@ -1,0 +1,7 @@
+{
+  "$comment": "the-forge / om-statusline — Claude Code status line wiring. Copy statusline.sh somewhere on your machine (e.g. ~/.claude/statusline.sh), make it executable (chmod +x), then point the command below at it. This is a GLOBAL display preference (~/.claude/settings.json), not a per-project hook. Requires: bash, jq, git.",
+  "statusLine": {
+    "type": "command",
+    "command": "~/.claude/statusline.sh"
+  }
+}

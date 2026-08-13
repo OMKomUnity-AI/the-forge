@@ -1,62 +1,70 @@
 # om-prompt-reforge 🕉️
 
-Une couche de **reforge de prompt** pour [Claude Code](https://claude.com/claude-code), en deux hooks `UserPromptSubmit` :
+A **prompt-reforging** layer for [Claude Code](https://claude.com/claude-code), in two `UserPromptSubmit` hooks. Part of [the-forge](../README.md), an open toolkit by [OMKomUnity](https://omkomunity.ai).
 
-1. **`prompt-router.py`** — un *gate* **0-LLM** (regex + stdlib) qui, quand votre prompt est vague, large ou discutable, injecte une instruction demandant à Claude de lancer d'abord le skill `forge` (pré-qualifier, challenger, réécrire en spec). Coût : **zéro token, zéro latence**.
-2. **`prompt-enricher.py`** — sur un prompt non-trivial *seulement*, un appel **Haiku** isolé produit une **reformulation en une phrase** qui rend l'intention explicite, affichée en **rose** préfixée du **🕉️**. Il **ne bloque jamais** votre prompt et **ne demande aucune clé API**.
+1. **`prompt-router.py`** — a **0-LLM** gate (regex + stdlib) that, when your prompt is vague, broad or worth challenging, injects an instruction telling Claude to run the `forge` skill first (pre-qualify, challenge, rewrite into a spec). Cost: **zero tokens, zero latency**.
+2. **`prompt-enricher.py`** — on a non-trivial prompt *only*, one isolated **Haiku** call produces a **one-sentence reformulation** that makes your intent explicit, printed in **pink** prefixed with **🕉️**. It **never blocks** your prompt and needs **no API key**.
 
-> Le principe : **le gate 0-LLM protège le LLM de lui-même.** L'enricher n'appelle Haiku que si le routeur regex a d'abord jugé le prompt non-trivial. « merci », « git status » ou « oui » ne coûtent donc rien.
+> The core idea: **the 0-LLM gate protects the LLM from itself.** The enricher only calls Haiku once the regex router has judged the prompt non-trivial. So "thanks", "git status" or "yes" cost nothing.
 
 ---
 
 ## Before / after
 
-Vous tapez un prompt sous-spécifié ; le 🕉️ vous renvoie l'intention explicitée *avant* que Claude ne parte sur une hypothèse :
+Type an under-specified prompt; the 🕉️ hands you back the explicit intent *before* Claude runs off on an assumption:
 
 ```
-Vous  ▸  améliore la perf
+You    ▸  improve the perf
 
-🕉️    ▸  Améliore la performance (vitesse d'exécution, latence, throughput, ou
-         coût infra) du système/code/pipeline [spécifier la cible], en priorisant
-         les gains mesurables et sans régression fonctionnelle.
+🕉️     ▸  Improve performance of an unspecified component/system by an unspecified
+          metric (latency/throughput/memory/cost) without a defined baseline or
+          success target.
 ```
 
-*(Sortie réelle de ce hook, capturée au test. Comme tout appel LLM, la formulation varie légèrement d'un run à l'autre — c'est la nature de l'enrichissement, pas un bug.)*
+**It follows your language.** Type in French, you get French back:
 
-La reformulation part **en contexte** (`additionalContext`) : Claude la voit, la traite, mais votre message original reste intact. Rien n'est réécrit à votre place.
+```
+You    ▸  améliore la perf
+
+🕉️     ▸  L'utilisateur demande une amélioration de performance sans préciser le
+          système/module visé, la métrique (vitesse, mémoire, latence) ni le
+          contexte projet actif.
+```
+
+*(Both are real outputs of this hook, captured under test. Like any LLM call, the wording varies slightly run to run — that's the nature of enrichment, not a bug.)* The reformulation is passed as **context** (`additionalContext`): Claude sees it, but your original message stays intact. Nothing is rewritten in your place.
 
 ---
 
-## Ce qu'il vous faut
+## What you need
 
-- **Python 3** (stdlib uniquement — aucune dépendance `pip`).
-- Pour l'enricher : le **CLI `claude`** installé et authentifié (abonnement Claude Pro/Max). L'enricher fait un `claude -p` en sous-processus et **ride sur cette authentification** — pas de clé API à gérer.
-- Le **routeur seul** ne requiert rien d'autre que Python : si vous ne voulez que le gate 0-LLM, n'installez que lui.
+- **Python 3** (stdlib only — no `pip` dependencies).
+- For the enricher: the **`claude` CLI** installed and authenticated (Claude Pro/Max subscription). The enricher shells out to `claude -p` and **rides on that authentication** — no API key to manage.
+- The **router alone** needs nothing but Python: if you only want the 0-LLM gate, install just that.
 
 ---
 
 ## Installation
 
-1. **Copiez les fichiers** dans le `.claude/` de *votre* projet :
+1. **Copy the files** into *your* project's `.claude/`:
 
    ```
-   votre-projet/
+   your-project/
    └── .claude/
        ├── hooks/
-       │   ├── prompt-router.py      # les deux hooks doivent rester co-localisés :
-       │   └── prompt-enricher.py    # l'enricher importe classify() du routeur par chemin
+       │   ├── prompt-router.py      # both hooks must stay co-located:
+       │   └── prompt-enricher.py    # the enricher imports classify() from the router by path
        └── skills/
            └── forge/
                └── SKILL.md
    ```
 
-   Depuis ce dépôt :
+   From this repo:
    ```bash
-   cp -R om-prompt-reforge/.claude/hooks/*        votre-projet/.claude/hooks/
-   cp -R om-prompt-reforge/.claude/skills/forge   votre-projet/.claude/skills/
+   cp -R om-prompt-reforge/.claude/hooks/*        your-project/.claude/hooks/
+   cp -R om-prompt-reforge/.claude/skills/forge   your-project/.claude/skills/
    ```
 
-2. **Câblez les hooks** : fusionnez [`settings.example.json`](./settings.example.json) dans le `.claude/settings.json` de votre projet. L'ordre est impératif — **routeur puis enricher** :
+2. **Wire the hooks**: merge [`settings.example.json`](./settings.example.json) into your project's `.claude/settings.json`. Order matters — **router then enricher**:
 
    ```json
    {
@@ -67,98 +75,97 @@ La reformulation part **en contexte** (`additionalContext`) : Claude la voit, la
          { "hooks": [ { "type": "command",
            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/prompt-enricher.py\"",
            "timeout": 30,
-           "statusMessage": "Enrichissement du prompt (Haiku)..." } ] }
+           "statusMessage": "Enriching the prompt (Haiku)..." } ] }
        ]
      }
    }
    ```
 
-3. **Redémarrez Claude Code** (les hooks se chargent au démarrage de session).
+3. **Restart Claude Code** (hooks load at session start).
 
 ---
 
-## Démo (test en isolation, sans rien câbler)
+## Demo (test in isolation, nothing wired)
 
-Chaque hook lit un JSON `{"prompt": "..."}` sur stdin. On peut donc les exercer à la main :
+Each hook reads a `{"prompt": "..."}` JSON on stdin, so you can exercise them by hand:
 
 ```bash
 cd om-prompt-reforge/.claude/hooks
 
-# Routeur — prompt trivial : silence total (le prompt passe intact)
-echo '{"prompt":"merci"}'                        | python3 prompt-router.py    # (aucune sortie)
+# Router — trivial prompt: total silence (the prompt passes through intact)
+echo '{"prompt":"thanks"}'                        | python3 prompt-router.py    # (no output)
 
-# Routeur — prompt non-trivial : injecte l'instruction "lance forge"
-echo '{"prompt":"construis-moi un système de cache"}' | python3 prompt-router.py
+# Router — non-trivial prompt: injects the "run forge" instruction
+echo '{"prompt":"build me a caching system"}'     | python3 prompt-router.py
 
-# Enricher — prompt trivial : gate 0-LLM, AUCUN appel Haiku
-echo '{"prompt":"git status"}'                   | python3 prompt-enricher.py
+# Enricher — trivial prompt: 0-LLM gate, NO Haiku call
+echo '{"prompt":"git status"}'                    | python3 prompt-enricher.py
 
-# Enricher — prompt non-trivial : appel Haiku réel (5-24 s), reformulation rose 🕉️
-echo '{"prompt":"améliore la perf"}'             | python3 prompt-enricher.py
+# Enricher — non-trivial prompt: real Haiku call (5-24s), pink 🕉️ reformulation
+echo '{"prompt":"improve the perf"}'              | python3 prompt-enricher.py
 ```
 
-Le dernier appel consomme votre abonnement (≈ quelques centimes) et prend quelques secondes : c'est le comportement réel de l'enricher.
+The last call consumes your subscription (≈ a few cents) and takes a few seconds: that's the enricher's real behavior.
 
 ---
 
-## Modèle & refresh
+## Model & refresh
 
-Le modèle Haiku est **paramétrable par variable d'environnement**, avec un défaut épinglé pour la reproductibilité :
+The Haiku model is **configurable via an environment variable**, with a pinned default for reproducibility:
 
 ```bash
-# Défaut si non défini : claude-haiku-4-5-20251001
+# Default if unset: claude-haiku-4-5-20251001
 export FORGE_ENRICHER_MODEL="claude-haiku-4-5-20251001"
 ```
 
-Quand un Haiku plus récent sort, pointez la variable dessus (ou changez le défaut en tête de `prompt-enricher.py`). Gardez un identifiant **daté** plutôt qu'un alias flottant si vous voulez des reformulations stables dans le temps.
+When a newer Haiku ships, point the variable at it (or change the default at the top of `prompt-enricher.py`). Prefer a **dated** identifier over a floating alias if you want stable reformulations over time.
 
-### Variante SDK (optionnelle, portable hors Claude Code)
+### SDK variant (optional, portable outside Claude Code)
 
-Par défaut, l'enricher fait un `claude -p` : **zéro clé**, mais il faut que le CLI `claude` soit installé et connecté. Si vous voulez faire tourner l'enricher **là où le CLI n'existe pas** (CI, autre machine, autre agent), remplacez l'appel sous-processus par un appel direct au SDK Anthropic authentifié via `ANTHROPIC_API_KEY`. Contrepartie assumée : cette clé est **facturée séparément** de l'abonnement (elle ne ride pas dessus). Variante documentée, non implémentée ici — le défaut zéro-clé couvre l'usage Claude Code.
+By default the enricher shells out to `claude -p`: **zero key**, but it requires the `claude` CLI to be installed and logged in. To run the enricher **where the CLI doesn't exist** (CI, another host, another agent), replace the subprocess call with a direct Anthropic SDK call authenticated via `ANTHROPIC_API_KEY`. Assumed trade-off: that key is **billed separately** from the subscription (it does not ride on it). Documented as a variant, not implemented here — the zero-key default covers Claude Code usage.
 
 ---
 
-## L'histoire d'ingénierie
+## The engineering story
 
-Ce hook est le produit d'une évaluation qui a **réfuté son intuition de départ**, puis l'a nuancée.
+This hook is the product of an evaluation that **refuted its own starting intuition**, then qualified it.
 
-**L'intuition** : « il faut un LLM pour comprendre un prompt mieux qu'un regex. » Six configurations ont été comparées sur un corpus de 14 cas synthétiques + 10 vrais prompts échantillonnés :
+**The intuition**: "you need an LLM to understand a prompt better than a regex can." Six configurations were compared over a corpus of 14 synthetic cases + 10 sampled real prompts:
 
-| Config | Mécanisme | Score | Latence | Appels LLM |
+| Config | Mechanism | Score | Latency | LLM calls |
 |---|---|---|---|---|
-| **V0** | routeur regex **0-LLM** | **12/14** | **0 s** | **0** |
-| V1 | clarificateur LLM solo | 12/14 | 10,4 s | 14/14 |
-| V2 | chaîné (router + V1) | 10/14 | 10,4 s | 14/14 |
-| V3 | clarificateur strict | 9/14 | 9,2 s | 14/14 |
-| V4 | clarificateur permissif | 13/14 | 8,3 s | 14/14 |
-| V5 | hybride séquentiel | 12/14 | ~4,5 s | 6/14 |
+| **V0** | **0-LLM** regex router | **12/14** | **0 s** | **0** |
+| V1 | solo LLM clarifier | 12/14 | 10.4 s | 14/14 |
+| V2 | chained (router + V1) | 10/14 | 10.4 s | 14/14 |
+| V3 | strict clarifier | 9/14 | 9.2 s | 14/14 |
+| V4 | permissive clarifier | 13/14 | 8.3 s | 14/14 |
+| V5 | sequential hybrid | 12/14 | ~4.5 s | 6/14 |
 
-**Le verdict mesuré** : le 0-LLM (V0) **égale ou bat 4 des 5 variantes LLM**. La seule qui le dépasse (V4) le fait pour **+1 cas** au prix de **+8,3 s sur chaque prompt** et d'un appel LLM systématique. Sur 10 vrais prompts, la variante LLM n'a jamais divergé utilement du routeur — seulement ajouté de la latence.
+**The measured verdict**: the 0-LLM router (V0) **matches or beats 4 of the 5 LLM variants**. The only one that edges past it (V4) does so by **+1 case** at the price of **+8.3 s on every prompt** and a systematic LLM call. Over 10 real prompts, the LLM variant never usefully diverged from the router — it only added latency.
 
-**Le rebond** : la métrique testée (bloquer / laisser passer) était *incomplète*. La vraie valeur d'un LLM ici n'est pas la décision binaire — c'est la **qualité de la reformulation** elle-même, que le 0-LLM ne peut structurellement pas produire (il n'a qu'un déclencheur vers `forge`, pas de champ « reformulation »).
+**The rebound**: the metric under test (block / pass) was *incomplete*. The real value of an LLM here isn't the binary decision — it's the **quality of the reformulation** itself, which the 0-LLM cannot produce by construction (it only has a trigger toward `forge`, no "reformulation" field).
 
-**Le mécanisme qui a tout débloqué** : plutôt qu'un `claude -p` « nu » (qui exige `ANTHROPIC_API_KEY` et casse l'auth abonnement), un **agent éphémère inline** — `--agents '{...}' --allowedTools "" --settings '{"disableAllHooks":true}'`, `maxTurns:1`, `effort:low`. Résultat : pas de rechargement des hooks de session, pas de risque que le modèle *exécute* la tâche au lieu de la reformuler, et surtout **consommation de l'abonnement, pas de facturation API séparée**. Validé 21/21 sans timeout.
+**The mechanism that unlocked it**: rather than a "bare" `claude -p` (which requires `ANTHROPIC_API_KEY` and breaks subscription auth), an **inline ephemeral agent** — `--agents '{...}' --allowedTools "" --settings '{"disableAllHooks":true}'`, `maxTurns:1`, `effort:low`. Result: no reloading of session hooks, no risk of the model *executing* the task instead of reforging it, and above all **it consumes the subscription, no separate API billing**. Validated 21/21 with no timeout.
 
-**Le design retenu** — celui de ce dépôt : **gate 0-LLM (routeur) PUIS enrichissement Haiku non-bloquant (enricher).** On capture la valeur (la reformulation) sans le risque (jamais de faux-blocage, zéro appel sur les prompts triviaux). C'est la synthèse d'une thèse réfutée par la mesure, pas un réflexe « mets un LLM partout ».
-
----
-
-## Limites assumées
-
-- **Latence** : +5 à 24 s sur les prompts **non-triviaux** (plancher inhérent au modèle, mesuré sur 21 appels). **0 s** sur les prompts triviaux (gate 0-LLM).
-- **Non-déterminisme** : la reformulation varie légèrement d'un appel à l'autre — trait attendu d'un LLM.
-- **Coût** : ≈ 0,007–0,03 $ par prompt non-trivial via `claude -p` (le sous-processus recharge l'overhead du CLI). Les prompts triviaux ne coûtent rien.
-- **Dépendance** : l'enricher exige le CLI `claude`. Le routeur, lui, est du pur stdlib et fonctionne partout.
-- **Fail-safe** : toute erreur ou timeout d'un hook → silence, `exit 0`, prompt inchangé. Un hook ne doit jamais se mettre entre vous et votre travail.
+**The retained design** — the one in this repo: **0-LLM gate (router) THEN non-blocking Haiku enrichment (enricher).** You capture the value (the reformulation) without the risk (never a false block, zero call on trivial prompts). It's the synthesis of a thesis refuted by measurement, not a reflex "put an LLM everywhere".
 
 ---
 
-## Adapter `forge` à votre écosystème
+## Assumed limits
 
-Le skill `forge` et l'instruction injectée par le routeur mentionnent des skills de l'écosystème d'origine (`new-feature`, `wiki-ingest`, `context7`/`playwright` MCP…). Ce sont des **exemples de cibles de routage**. Dans une installation minimale, `forge` s'arrête naturellement à la **spec** (Phase 4) — remplacez la liste par vos propres skills, ou laissez-la : `forge` se dégrade proprement.
+- **Latency**: +5 to 24 s on **non-trivial** prompts (a floor inherent to the model, measured over 21 calls). **0 s** on trivial prompts (0-LLM gate).
+- **Non-determinism**: the reformulation varies slightly from one call to the next — expected LLM behavior.
+- **Cost**: ≈ $0.007–0.03 per non-trivial prompt via `claude -p` (the subprocess reloads the CLI overhead). Trivial prompts cost nothing.
+- **Dependency**: the enricher requires the `claude` CLI. The router is pure stdlib and works everywhere.
+- **Fail-safe**: any hook error or timeout → silence, `exit 0`, prompt unchanged. A hook must never get between you and your work.
 
 ---
 
-## Licence
+## Adapt `forge` to your ecosystem
 
-[MIT](../LICENSE) — © 2026 OMKomUnity.
+The `forge` skill and the router's injected instruction reference skills from the original ecosystem (`new-feature`, `wiki-ingest`, `context7`/`playwright` MCP…). These are **examples of routing targets**. In a minimal setup, `forge` naturally stops at the **spec** (Phase 4) — replace the list with your own skills, or leave it: `forge` degrades gracefully.
+
+---
+
+Built & maintained by **[OMKomUnity](https://omkomunity.ai)** — *AI orchestrated, not endured.*
+Licensed under [MIT](../LICENSE) — © 2026 OMKomUnity.
