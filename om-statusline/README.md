@@ -2,6 +2,8 @@
 
 The **OMKomUnity status line** for [Claude Code](https://claude.com/claude-code) — the little bar at the bottom of your session. One `bash` script, no dependencies beyond `jq` and `git`. Part of [the-forge](../README.md), an open toolkit by [OMKomUnity](https://omkomunity.ai).
 
+![The om-statusline in action: the bar updates live as context fills up (green to yellow to red) and the model switches to a costly Opus (with a cost warning), rendered by the real script.](./demo.gif)
+
 ```
 [Opus 4.8 ⚠max] 📁 my-project | 🌿 main +2~5 | ██░░░░░░░░ 20% | 🪙 203.7k | ⏱️ 35m 12s | 5h:30% 7d:64% | 🕉️ omkomunity.ai
 ```

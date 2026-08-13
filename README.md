@@ -56,6 +56,8 @@ You    ▸  improve the perf
 
 Everything worth having at the bottom of a Claude Code session, in pure `bash` + `jq`: model & effort (with a ⚠ cost warning on Opus/Fable), current folder, git branch/dirty count, context bar, token count (main + sub-agents), session timer, and 5h/7d rate-limit usage.
 
+![The om-statusline in action](./om-statusline/demo.gif)
+
 ```
 [Opus 4.8 ⚠max] 📁 my-project | 🌿 main +2~5 | ██░░░░░░░░ 20% | 🪙 203.7k | ⏱️ 35m 12s | 5h:30% 7d:64% | 🕉️ omkomunity.ai
 ```
