@@ -1,0 +1,9 @@
+# Traces écrites par l'enricher au runtime (jamais versionnées)
+**/.claude/logs/
+
+# Caches Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store

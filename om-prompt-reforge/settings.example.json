@@ -1,0 +1,25 @@
+{
+  "$comment": "the-forge / om-prompt-reforge — wiring UserPromptSubmit. Copiez ces deux blocs dans le .claude/settings.json de VOTRE projet (ou fusionnez-les avec vos hooks existants). Ordre imperatif : prompt-router.py (gate 0-LLM) PUIS prompt-enricher.py (reformulation Haiku, non bloquante). Les fichiers .claude/hooks/*.py et .claude/skills/forge/ doivent etre presents a la racine du projet cible. $CLAUDE_PROJECT_DIR est resolu par Claude Code vers la racine du projet.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/prompt-router.py\""
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/prompt-enricher.py\"",
+            "timeout": 30,
+            "statusMessage": "Enrichissement du prompt (Haiku)..."
+          }
+        ]
+      }
+    ]
+  }
+}
