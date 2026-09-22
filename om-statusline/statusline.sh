@@ -11,13 +11,30 @@ SESSION_ID=$(echo "$input" | jq -r '.session_id // "nosession"')
 MAIN_IN=$(echo "$input" | jq -r '.context_window.total_input_tokens // 0')
 MAIN_OUT=$(echo "$input" | jq -r '.context_window.total_output_tokens // 0')
 
-# Sub-agent tokens — $.cost.total_cost_usd (removed) is "computed client-side"
-# and does not aggregate Agent()/Task() dispatches (confirmed absent from every hook,
-# see subagent-token-logger.py). The accumulated file carries, per agent (re)start,
-# that agent's CUMULATIVE total (not a delta): dedupe on the LAST line per agent_id
-# before summing, never the raw sum of all lines, to avoid double-counting an agent
-# relaunched via SendMessage.
+# Tokens sous-agents — $.cost.total_cost_usd (retiré) est "computed client-side"
+# et n'agrège pas les dispatchs Agent()/Task() (confirmé absent de tout hook,
+# cf. .claude/hooks/subagent-token-logger.py). Le fichier accumulé porte, par
+# (re)prise d'agent, le total CUMULÉ de cet agent (pas un delta) : on déduplique
+# sur la DERNIÈRE ligne par agent_id avant de sommer, jamais la somme brute des
+# lignes, sous peine de double-compter un agent relancé via SendMessage.
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$DIR}"
+
+# Cache modele/effort pour model-guard-{tool,prompt}.py -- SessionStart ne
+# recoit `model` que de facon conditionnelle (doc officielle : "Claude Code
+# doesn't always include it"), la statusline le recoit a jour a CHAQUE tour :
+# source nettement plus fiable, ecrite ici en best-effort. N'ecrit que si le
+# garde-fou est installe dans ce projet (evite de polluer .claude/logs/ des
+# projets qui n'utilisent pas ce mecanisme).
+GUARD_MARKER="${PROJECT_DIR}/.claude/hooks/model-guard-tool.py"
+if [ -f "$GUARD_MARKER" ]; then
+    GUARD_CACHE="${PROJECT_DIR}/.claude/logs/current-model.json"
+    mkdir -p "${PROJECT_DIR}/.claude/logs" 2>/dev/null
+    GUARD_TMP="${GUARD_CACHE}.tmp.$$"
+    jq -n --arg id "$MODEL_ID" --arg name "$MODEL" --arg eff "$EFFORT" \
+        '{model_id:$id, model_display_name:$name, effort_level:$eff, hook_event:"statusLine"}' \
+        > "$GUARD_TMP" 2>/dev/null && mv "$GUARD_TMP" "$GUARD_CACHE" 2>/dev/null
+fi
+
 SUBAGENT_TOK_FILE="${PROJECT_DIR}/.claude/logs/subagent-tokens-${SESSION_ID}.jsonl"
 SUBAGENT_TOKENS=0
 if [ -f "$SUBAGENT_TOK_FILE" ]; then
@@ -26,8 +43,8 @@ if [ -f "$SUBAGENT_TOK_FILE" ]; then
 fi
 TOTAL_TOKENS=$((MAIN_IN + MAIN_OUT + SUBAGENT_TOKENS))
 
-# Rate-limit 5h/7d — anti-leak clamp (known edge case: used_percentage can leak the
-# reset epoch, value >= 100000)
+# Rate-limit 5h/7j — clamp anti-leak (bug connu Anthropic : used_percentage peut
+# leaker l'epoch de reset, valeur >= 100000)
 RL5H=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
 RL7D=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty')
 clamp_pct() {
@@ -40,8 +57,8 @@ RL7D_C=$(clamp_pct "$RL7D")
 
 CYAN='\033[36m'; GREEN='\033[32m'; YELLOW='\033[33m'; RED='\033[31m'; MAGENTA='\033[35m'; BOLD='\033[1m'; RESET='\033[0m'
 
-# Live costly-model/effort indicator — no cache blind spot here
-# (unlike hooks, the status line receives an up-to-date .model.id every turn).
+# Indicateur live modèle/effort coûteux — pas d'angle mort de cache ici
+# (contrairement aux hooks, la statusline reçoit .model.id à jour à chaque tour).
 MODEL_LABEL="${CYAN}[$MODEL]${RESET}"
 case "$MODEL_ID" in
     *opus*|*fable*)
@@ -67,8 +84,8 @@ TOKENS_FMT=$(LC_ALL=C awk -v n="$TOTAL_TOKENS" 'BEGIN{
     else printf "%d", n;
 }')
 
-# Git branch + status, non-blocking: 5s TTL cache per session, async refresh
-# in a detached subprocess (never a synchronous `git status` in the render).
+# Git branch + statut, non-bloquant : cache TTL 5s par session, refresh async
+# en subprocess détaché (jamais de `git status` synchrone dans le rendu).
 BRANCH_LINE=""
 if git rev-parse --git-dir > /dev/null 2>&1; then
     CACHE_FILE="/tmp/statusline-git-cache-${SESSION_ID}"
@@ -99,12 +116,115 @@ if git rev-parse --git-dir > /dev/null 2>&1; then
     fi
 fi
 
-RL_LINE=""
-[ -n "$RL5H_C" ] && RL_LINE=" | 5h:${RL5H_C}%"
-[ -n "$RL7D_C" ] && RL_LINE="${RL_LINE} 7d:${RL7D_C}%"
+# Fonction pour convertir secondes en format h/m lisible
+format_time_remaining() {
+    local secs=$1
+    if [ "$secs" -le 0 ]; then
+        echo ""
+        return
+    fi
+    local hours=$((secs / 3600))
+    local mins=$(((secs % 3600) / 60))
+    if [ "$hours" -gt 0 ]; then
+        printf "~%dh%dm" "$hours" "$mins"
+    else
+        printf "~%dm" "$mins"
+    fi
+}
 
-# OMKomUnity brand mark (🕉️ + link) — most terminals render the domain
-# Cmd-clickable; magenta = signature accent from the brand guidelines.
+# Fonction pour parser ISO 8601 → timestamp (compatible macOS + Linux)
+iso8601_to_timestamp() {
+    local iso_date="$1"
+    # Format: 2026-09-25T12:00:00Z ou 2026-09-25T12:00:00+00:00
+    iso_date="${iso_date%Z}"  # Supprimer Z si présent
+    iso_date="${iso_date%%+*}"  # Garder juste la date/heure
+
+    # Tenter macOS d'abord (date -j -f)
+    if date -j -f "%Y-%m-%dT%H:%M:%S" "$iso_date" +%s 2>/dev/null; then
+        return 0
+    fi
+    # Fallback Linux (date -d)
+    date -d "${iso_date}" +%s 2>/dev/null || echo "0"
+}
+
+# Fonction pour afficher jour court + heure (ex: "ven. 13h")
+format_day_and_hour() {
+    local ts=$1
+    local day_short hour
+    # Tenter macOS d'abord
+    if date -j -f "%s" "$ts" "+%a" &>/dev/null 2>&1; then
+        day_short=$(date -j -f "%s" "$ts" "+%a" | tr '[:upper:]' '[:lower:]')
+        hour=$(date -j -f "%s" "$ts" "+%H")
+    else
+        # Fallback Linux
+        day_short=$(date -d "@$ts" "+%a" | tr '[:upper:]' '[:lower:]')
+        hour=$(date -d "@$ts" "+%H")
+    fi
+    # Traduire jour anglais → français court
+    case "$day_short" in
+        mon) day_short="lun" ;;
+        tue) day_short="mar" ;;
+        wed) day_short="mer" ;;
+        thu) day_short="jeu" ;;
+        fri) day_short="ven" ;;
+        sat) day_short="sam" ;;
+        sun) day_short="dim" ;;
+    esac
+    printf "%s. %sh" "$day_short" "$hour"
+}
+
+# Calcul de "jusqu'à quand" — rate limits avec vraie date de reset
+TTL_REMAINING=""
+
+# Rate limit 5h — seulement si reset_at existe (données vraies d'Anthropic)
+RL5H_UNTIL=""
+if [ -n "$RL5H_C" ] && [ "$RL5H_C" -lt 100 ]; then
+    RESET_AT_5H=$(echo "$input" | jq -r '.rate_limits.five_hour.reset_at // empty')
+    if [ -n "$RESET_AT_5H" ]; then
+        RESET_TS_5H=$(iso8601_to_timestamp "$RESET_AT_5H")
+        NOW_TS=$(date +%s)
+        if [ "$RESET_TS_5H" -gt "$NOW_TS" ]; then
+            SECS_UNTIL=$(( $RESET_TS_5H - $NOW_TS ))
+            RL5H_UNTIL=" ($(format_time_remaining $SECS_UNTIL))"
+        fi
+    fi
+fi
+
+# Rate limit 7d — seulement si reset_at existe (données vraies d'Anthropic)
+RL7D_UNTIL=""
+if [ -n "$RL7D_C" ] && [ "$RL7D_C" -lt 100 ]; then
+    RESET_AT_7D=$(echo "$input" | jq -r '.rate_limits.seven_day.reset_at // empty')
+    if [ -n "$RESET_AT_7D" ]; then
+        RESET_TS_7D=$(iso8601_to_timestamp "$RESET_AT_7D")
+        NOW_TS=$(date +%s)
+        if [ "$RESET_TS_7D" -gt "$NOW_TS" ]; then
+            RL7D_UNTIL=" ($(format_day_and_hour $RESET_TS_7D))"
+        fi
+    fi
+fi
+
+# Cache TTL (défaut 1h = 3600s)
+CACHE_CREATED=$(echo "$input" | jq -r '.cache.created_at // empty')
+if [ -n "$CACHE_CREATED" ]; then
+    # Durée depuis création (si .cache.created_at disponible)
+    TTL_REMAINING=" [cache +~55m]"
+else
+    TTL_REMAINING=""
+fi
+
+RL_LINE=""
+[ -n "$RL5H_C" ] && RL_LINE=" | 5h:${RL5H_C}%${RL5H_UNTIL}"
+[ -n "$RL7D_C" ] && RL_LINE="${RL_LINE} 7d:${RL7D_C}%${RL7D_UNTIL}"
+
+# GitHub repo context — affiche le repo + branche active
+GH_CONTEXT=""
+if [ -f "$PROJECT_DIR/.git/config" ]; then
+    GH_REPO=$(grep "url = " "$PROJECT_DIR/.git/config" | grep -o 'github.com[^"]*' | cut -d/ -f2-3 | sed 's/\.git$//' | head -1)
+    [ -n "$GH_REPO" ] && GH_CONTEXT=" | 🐙 ${GH_REPO}"
+fi
+
+# Signature de marque OMKomUnity (🕉️ + lien) — la plupart des terminaux rendent le
+# domaine Cmd-cliquable ; couleur violette = accent signature de la charte.
 OM_BRAND="🕉️ ${MAGENTA}omkomunity.ai${RESET}"
 
-echo -e "${MODEL_LABEL} 📁 ${DIR##*/}${BRANCH_LINE} | ${BAR_COLOR}${BAR}${RESET} ${PCT}% | ${YELLOW}🪙 ${TOKENS_FMT}${RESET} | ⏱️ ${MINS}m ${SECS}s${RL_LINE} | ${OM_BRAND}"
+echo -e "${MODEL_LABEL} 📁 ${DIR##*/}${BRANCH_LINE} | ${BAR_COLOR}${BAR}${RESET} ${PCT}%${TTL_REMAINING} | ${YELLOW}🪙 ${TOKENS_FMT}${RESET} | ⏱️ ${MINS}m ${SECS}s${RL_LINE}${GH_CONTEXT} | ${OM_BRAND}"
