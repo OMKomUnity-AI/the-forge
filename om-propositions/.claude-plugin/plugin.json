@@ -1,0 +1,6 @@
+{
+  "name": "om-propositions",
+  "version": "0.1.0",
+  "description": "Les propositions de sessions suivantes laissees par les /close, categorisees et priorisees par Haiku",
+  "author": { "name": "OMKomUnity", "url": "https://omkomunity.ai" }
+}

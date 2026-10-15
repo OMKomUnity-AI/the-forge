@@ -18,7 +18,7 @@ Emplacements (surchargeables) :
   repo  : $CLAUDE_PROJECT_DIR  (défaut : cwd)
 
 Usage :
-  orch.py log --session sonnet-maillage --task "#1" --kind start --msg "liens vers /comprendre"
+  orch.py log --session sonnet-maillage --task "#1" --kind start --msg "liens vers /comprendre" --model sonnet
   orch.py log --session sonnet-maillage --task "#1" --kind review-request --msg "diff pret" --ref 3 fichiers
   orch.py log --session ORCHESTRATRICE --task "#1" --kind review-ok --msg "6 ancres distinctes, verifie"
   orch.py render            # recalcule le Markdown sans ajouter d'evenement
@@ -29,16 +29,29 @@ Codes : 0 = ok, 1 = erreur d'usage.
 import argparse
 import json
 import os
+import re
+import shlex
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-KINDS = ("planned", "start", "progress", "review-request", "review-ok", "review-reject", "done", "blocked", "note")
+KINDS = ("planned", "start", "progress", "review-request", "review-ok", "review-reject", "done", "blocked", "note",
+         "question", "answer")
+# question/answer ne changent JAMAIS l'etat d'une tache : une session qui pose une question
+# reste « en cours ». Une question est en attente tant qu'aucun `answer` ne porte son id en ref.
+HORS_ETAT = ("question", "answer")
+# Pointeur vers le journal courant, hors de tout depot : le pane le lit quel que soit le
+# repertoire ou tourne la session qui l'affiche. Sans lui, un chemin relatif suivait le cwd
+# et le pane affichait « Aucun journal lisible » des que la session changeait de dossier
+# (constate le 2026-10-15).
+POINTEUR = Path.home() / ".claude" / "orchestration" / "journal-courant.json"
+PROJETS = Path.home() / ".claude" / "projects"
 # Un seul etat courant par (session, tache) : le DERNIER evenement gagne. L'ordre ci-dessous
 # ne sert qu'a l'affichage, jamais a decider — sinon un `done` tardif serait masque par un
 # `blocked` plus ancien.
 PUCE = {"planned": "⚪", "start": "🟢", "progress": "🟢", "review-request": "🟡", "review-ok": "✅",
-        "review-reject": "❌", "done": "✅", "blocked": "🔴", "note": "·"}
+        "review-reject": "❌", "done": "✅", "blocked": "🔴", "note": "·", "question": "❓", "answer": "💬"}
 
 
 def racine() -> Path:
@@ -71,12 +84,50 @@ def lire() -> list:
     return evenements
 
 
-def ajouter(session: str, task: str, kind: str, msg: str, ref: str = "") -> dict:
+def ajouter(session: str, task: str, kind: str, msg: str, ref: str = "", model: str = "",
+            options: list = None, transcript: str = None, cwd: str = "", prompt: str = "") -> dict:
     ev = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
           "session": session, "task": task, "kind": kind, "msg": msg, "ref": ref}
+    if model:
+        ev["model"] = model
+    if options:
+        ev["options"] = options
+    if kind == "question":
+        # Id propre a la question : `session|ts` collisionnait quand une session pose plusieurs
+        # questions dans la meme seconde, et UNE reponse les retirait toutes (2026-10-15).
+        ev["id"] = uuid.uuid4().hex[:10]
+    if transcript:
+        ev["transcript"] = transcript
+    if cwd:
+        ev["cwd"] = cwd
+    if prompt:
+        ev["prompt"] = prompt
     with chemin_etat().open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(ev, ensure_ascii=False) + "\n")
     return ev
+
+
+def modeles(evenements: list) -> dict:
+    """Modele de chaque session = le DERNIER qu'elle a declare (--model), "" si jamais declare.
+    Declare une fois (au `planned` ou au `start`), il vaut pour toutes ses taches suivantes."""
+    out = {}
+    for ev in evenements:
+        if ev["kind"] == "answer":
+            continue  # PROPRIETAIRE repond depuis le pane : ce n'est pas une session a surveiller
+        out.setdefault(ev["session"], "")
+        if ev.get("model"):
+            out[ev["session"]] = ev["model"]
+    return out
+
+
+def alerte_modele(session: str, model: str) -> str:
+    """Les sous-sessions portent un modele explicite, jamais Opus (CLAUDE.md global, § Subagents).
+    L'orchestratrice, elle, peut etre Opus depuis la levee du 2026-10-15."""
+    if not model:
+        return "modèle non déclaré"
+    if "opus" in model.lower() and not session.upper().startswith("ORCH"):
+        return "exécutant en Opus"
+    return ""
 
 
 def horodatage(iso: str) -> datetime:
@@ -93,11 +144,259 @@ def duree(depuis: str) -> str:
     return f"{m // 60} h {m % 60:02d}"
 
 
+def ecrire_pointeur() -> None:
+    POINTEUR.parent.mkdir(parents=True, exist_ok=True)
+    POINTEUR.write_text(json.dumps({"ORCH_DIR": str(chemin_etat().parent),
+                                    "ORCH_OUT": str(chemin_sortie())}), encoding="utf-8")
+
+
+def lire_pointeur() -> None:
+    """Sans ORCH_DIR explicite, reprend le dernier journal ecrit (pour le pane, qui ne sait
+    pas d'ou les sessions ecrivent)."""
+    if os.environ.get("ORCH_DIR") or not POINTEUR.exists():
+        return
+    try:
+        os.environ.update(json.loads(POINTEUR.read_text(encoding="utf-8")))
+    except (OSError, json.JSONDecodeError):
+        pass
+
+
+def trouver_transcript(session: str) -> str:
+    """Le transcript de la session qui appelle `log` : le plus recemment modifie (2 min) dont
+    la fin contient `--session <nom>`. L'appel Bash est ecrit au transcript AVANT de tourner,
+    c'est ce qui rend la recherche possible. ORCH_TRANSCRIPT force le choix."""
+    if os.environ.get("ORCH_TRANSCRIPT"):
+        return os.environ["ORCH_TRANSCRIPT"]
+    aiguille = f"--session {session}".encode()
+    maintenant = datetime.now().timestamp()
+    candidats = []
+    for f in PROJETS.glob("*/*.jsonl"):
+        try:
+            st = f.stat()
+            if maintenant - st.st_mtime > 120:
+                continue
+            with f.open("rb") as fh:
+                fh.seek(max(0, st.st_size - 200_000))
+                if aiguille in fh.read():
+                    candidats.append((st.st_mtime, str(f)))
+        except OSError:
+            continue
+    return max(candidats)[1] if candidats else ""
+
+
+STATUSLINE = Path.home() / ".claude" / "orchestration" / "contexte"
+CACHE_COMPACT = Path.home() / ".claude" / "orchestration" / "compactions-cache.json"
+
+
+def compactions(f: Path) -> int:
+    """Compactions sur TOUT le transcript, lu en increment depuis le dernier offset (cache) :
+    un transcript fait des centaines de Mo, le relire a chaque rafraichissement du pane est exclu."""
+    try:
+        cache = json.loads(CACHE_COMPACT.read_text()) if CACHE_COMPACT.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        cache = {}
+    offset, n = cache.get(str(f), [0, 0])
+    taille = f.stat().st_size
+    if taille < offset:
+        offset, n = 0, 0  # fichier reecrit : on repart de zero
+    if taille > offset:
+        with f.open("rb") as fh:
+            fh.seek(offset)
+            bloc = fh.read()
+        coupe = bloc.rfind(b"\n") + 1  # ne compter que des lignes completes
+        n += bloc[:coupe].count(b'"compact_boundary"')
+        offset += coupe
+        cache[str(f)] = [offset, n]
+        try:
+            CACHE_COMPACT.parent.mkdir(parents=True, exist_ok=True)
+            CACHE_COMPACT.write_text(json.dumps(cache))
+        except OSError:
+            pass
+    return n
+
+
+def contexte_transcript(chemin: str) -> dict:
+    """Remplissage de la fenetre de la session de ce transcript.
+    Source 1 : ce que la statusline de la session a ecrit (taille de fenetre exacte, 200k ou 1M).
+    Source 2, repli : le dernier message assistant du transcript, fenetre alors ESTIMEE."""
+    f = Path(chemin)
+    if not chemin or not f.exists():
+        return {}
+    st = f.stat()
+    base = {"compactions": compactions(f),
+            "maj": datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat(timespec="seconds")}
+    sl = STATUSLINE / (f.stem + ".json")
+    if sl.exists():
+        try:
+            d = json.loads(sl.read_text(encoding="utf-8"))
+            if d.get("window"):
+                tokens = int(d.get("tokens") or 0)
+                pct = d.get("pct")
+                return {**base, "tokens": tokens, "fenetre": int(d["window"]), "modele_reel": d.get("model", ""),
+                        "pct": round(pct) if pct is not None else round(100 * tokens / d["window"]), "estime": False}
+        except (OSError, json.JSONDecodeError, ValueError, TypeError):
+            pass
+    with f.open("rb") as fh:
+        fh.seek(max(0, st.st_size - 2_000_000))
+        lignes = fh.read().decode("utf-8", "replace").splitlines()
+    for l in reversed(lignes):
+        if '"usage"' not in l:
+            continue
+        try:
+            o = json.loads(l)
+        except json.JSONDecodeError:
+            continue
+        m = o.get("message") or {}
+        u = m.get("usage") or {}
+        if o.get("type") != "assistant" or not u or o.get("isSidechain"):
+            continue
+        tokens = (u.get("input_tokens", 0) + u.get("cache_creation_input_tokens", 0)
+                  + u.get("cache_read_input_tokens", 0))
+        fenetre = 200_000 if tokens <= 200_000 else 1_000_000
+        return {**base, "tokens": tokens, "fenetre": fenetre, "pct": round(100 * tokens / fenetre),
+                "modele_reel": m.get("model", ""), "estime": True}
+    return {}
+
+
+def contextes(evenements: list) -> dict:
+    """Session -> remplissage, via le dernier transcript qu'elle a lie a un evenement."""
+    lien, proprio = {}, {}
+    for ev in evenements:
+        t = ev.get("transcript")
+        if not t:
+            continue
+        # Un transcript appartient a la PREMIERE session qui l'a lie. Avant le garde de `log`,
+        # l'orchestratrice qui loguait pour un sous-agent lui pretait son propre contexte.
+        proprio.setdefault(t, ev["session"])
+        if proprio[t] == ev["session"]:
+            lien[ev["session"]] = t
+    return {s: contexte_transcript(t) for s, t in lien.items()}
+
+
+def sessions_terminees(evenements: list) -> list:
+    """Sessions dont toutes les taches sont done/review-ok et sans question en attente : le pane
+    les replie en une ligne, sinon la liste grossit de tout l'historique du journal."""
+    st = etat(evenements)
+    attente = {q["session"] for q in questions_en_attente(evenements)}
+    par = {}
+    for (s, _), v in st.items():
+        par.setdefault(s, []).append(v["ev"]["kind"])
+    return sorted(s for s, k in par.items() if s not in attente and all(x in ("done", "review-ok") for x in k))
+
+
+def lancees(evenements: list) -> set:
+    """Sessions qui ont au moins un evenement au-dela du `planned` pose par l'orchestratrice."""
+    return {ev["session"] for ev in evenements if ev["kind"] not in ("planned", "answer")}
+
+
+def questions_en_attente(evenements: list) -> list:
+    """Questions sans `answer` dont la ref est leur id (`id` propre, ou `session|ts` pour les
+    questions posees avant son introduction)."""
+    repondues = {ev.get("ref") for ev in evenements if ev["kind"] == "answer"}
+    qs = [{**ev, "id": ev.get("id") or f"{ev['session']}|{ev['ts']}"}
+          for ev in evenements if ev["kind"] == "question"]
+    return [q for q in qs if q["id"] not in repondues]
+
+
+LANCEMENTS = Path.home() / ".claude" / "orchestration" / "lancements"
+# Sessions lancees autonomes : `auto` laisse passer les actions sures sans demander et ne
+# soumet au proprietaire que les actions risquees (decision du proprietaire, 2026-10-15).
+# Les hooks du depot cible (git-safety, etc.) restent actifs dans tous les cas.
+MODE_PERMISSION = os.environ.get("ORCH_PERMISSION_MODE", "auto")
+
+
+def script_lancement(ev: dict) -> Path:
+    """Ecrit le lanceur d'une tache planifiee : un script bash (le Terminal ouvre le shell de
+    l'utilisateur, fish ici, ou `"$(cat …)"` n'a pas la meme syntaxe) qui se place dans le
+    depot et demarre `claude --model <modele>` avec le prompt d'amorcage en premier message."""
+    # Le journal est ecrit par toute session : chaque valeur qui finit dans un script shell est
+    # validee puis quotee (shlex), jamais json.dumps (en guillemets doubles, bash executerait
+    # encore $(...) et les backticks). Le nom de session sert aussi de nom de fichier.
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", ev["session"]):
+        raise SystemExit(f"nom de session refuse pour un lancement : {ev['session']!r}")
+    if ev.get("model") and not re.fullmatch(r"[a-z0-9.\-\[\]]+", ev["model"]):
+        raise SystemExit(f"modele refuse pour un lancement : {ev['model']!r}")
+    LANCEMENTS.mkdir(parents=True, exist_ok=True)
+    base = LANCEMENTS / ev["session"]
+    base.with_suffix(".txt").write_text(ev["prompt"], encoding="utf-8")
+    modele = (f" --model {shlex.quote(ev['model'])}" if ev.get("model") else "") \
+        + f" --permission-mode {shlex.quote(MODE_PERMISSION)}"
+    sh = base.with_suffix(".sh")
+    sh.write_text("#!/bin/bash\n"
+                  f"cd {shlex.quote(ev['cwd'])} || exit 1\n"
+                  f"exec claude{modele} \"$(cat {shlex.quote(str(base.with_suffix('.txt')))})\"\n", encoding="utf-8")
+    sh.chmod(0o755)
+    return sh
+
+
+def lancer(session: str, task: str, essai: bool = False) -> str:
+    """Ouvre un onglet Terminal sur la tache `planned` la plus recente de (session, task)."""
+    evs = [e for e in lire() if e["kind"] == "planned" and e["session"] == session
+           and e["task"] == task and e.get("prompt") and e.get("cwd")]
+    if not evs:
+        raise SystemExit(f"aucune tache planifiee lancable pour {session} {task} (--cwd et --prompt-file requis)")
+    sh = script_lancement(evs[-1])
+    if not essai:
+        import subprocess
+        commande = f"bash {shlex.quote(str(sh))}".replace("\\", "\\\\").replace('"', '\\"')
+        subprocess.run(["osascript", "-e", f'tell application "Terminal" to do script "{commande}"',
+                        "-e", 'tell application "Terminal" to activate'], check=True)
+        ajouter(session, task, "note", "lancee depuis /orch", model=evs[-1].get("model", ""))
+    return str(sh)
+
+
+# Questions <-> Google Chat (spec : docs/superpowers/specs/2026-10-15-orch-questions-google-chat.md).
+# n8n porte la carte Chat et recoit les clics ; ici on n'envoie et ne relit que par son webhook,
+# authentifie par un secret partage (~/.claude/orchestration/n8n.json, 600). Tout est best-effort :
+# Chat indisponible ne doit jamais bloquer un `log` ni le pane.
+N8N = Path.home() / ".claude" / "orchestration" / "n8n.json"
+# Le secret vit seul dans son fichier (600), jamais dans n8n.json : un fichier affiche une fois
+# dans une session y reste trace a chaque modification (incident du 2026-10-15).
+SECRET = Path.home() / ".claude" / "orchestration" / "orch-secret"
+
+
+def chat_post(action: str, payload: dict):
+    """POST {action, ...payload} vers le webhook orch-api ; None si non configure ou en echec."""
+    try:
+        cfg = json.loads(N8N.read_text(encoding="utf-8"))
+        cfg["secret"] = SECRET.read_text(encoding="utf-8").strip() if SECRET.exists() else ""
+        if not cfg.get("url") or not cfg["secret"]:
+            return None
+        import urllib.request
+        req = urllib.request.Request(
+            cfg["url"].rstrip("/") + "/webhook/orch-api",
+            data=json.dumps({"action": action, **payload}, ensure_ascii=False).encode(),
+            headers={"Content-Type": "application/json", "x-orch-secret": cfg["secret"]}, method="POST")
+        with urllib.request.urlopen(req, timeout=5) as r:
+            corps = r.read().decode() or "{}"
+            return json.loads(corps)
+    except Exception:
+        return None
+
+
+def chat_pull() -> list:
+    """Reponses donnees dans Chat depuis le dernier passage : ecrites au journal (une fois, et
+    seulement si la question attend encore), renvoyees pour que le pane les soumette."""
+    rep = chat_post("pull", {}) or {}
+    attente = {q["id"]: q for q in questions_en_attente(lire())}
+    recues = []
+    for a in rep.get("answers", []):
+        q = attente.get(a.get("qid"))
+        if not q or not a.get("answer"):
+            continue  # deja repondue (pane ou pull precedent) : rien a faire
+        ajouter("PROPRIETAIRE", q["task"], "answer", str(a["answer"]), ref=q["id"])
+        recues.append({"qid": q["id"], "session": q["session"], "task": q["task"],
+                       "msg": q["msg"], "answer": str(a["answer"])})
+    return recues
+
+
 def etat(evenements: list) -> dict:
     """Dernier evenement par (session, tache), plus la date de DEBUT de cette tache."""
     courant = {}
     debut = {}
     for ev in evenements:
+        if ev["kind"] in HORS_ETAT:
+            continue
         cle = (ev["session"], ev["task"])
         courant[cle] = ev
         debut.setdefault(cle, ev["ts"])
@@ -305,6 +604,14 @@ def rendre() -> str:
              f"{len(bloques)} bloquée(s) · {len(finis)} terminée(s) · {len(planifies)} à lancer**")
     L.append("")
 
+    qs = questions_en_attente(lire())
+    if qs:
+        L += ["## ❓ Questions en attente", ""]
+        for q in qs:
+            opts = " · ".join(f"**{i}.** {o}" for i, o in enumerate(q.get("options", []), 1))
+            L.append(f"- `{q['session']}` {q['task']} — {q['msg']}" + (f"  \n  {opts}" if opts else ""))
+        L.append("")
+
     if bloques:
         L += ["## 🔴 Bloqué — action requise", ""]
         for v in sorted(bloques, key=lambda v: v["ev"]["ts"]):
@@ -318,6 +625,14 @@ def rendre() -> str:
             e = v["ev"]
             ref = f" · {e['ref']}" if e.get("ref") else ""
             L.append(f"- [ ] **{e['task']}** · `{e['session']}` · depuis {duree(e['ts'])} — {e['msg']}{ref}")
+        L.append("")
+
+    sessions = modeles(lire())
+    if sessions:
+        L += ["## Sessions", "", "| Session | Modèle | Alerte |", "|---|---|---|"]
+        for s, m in sorted(sessions.items()):
+            a = alerte_modele(s, m)
+            L.append(f"| `{s}` | {m or '—'} | {'⚠️ ' + a if a else ''} |")
         L.append("")
 
     L += ["## En cours", ""]
@@ -394,13 +709,57 @@ def main() -> int:
     pl.add_argument("--kind", required=True, choices=KINDS)
     pl.add_argument("--msg", required=True)
     pl.add_argument("--ref", default="", help="commit, chemin, nombre de fichiers...")
+    pl.add_argument("--cwd", default="", help="kind planned : depot ou lancer la session")
+    pl.add_argument("--prompt-file", default="", help="kind planned : fichier du prompt d'amorcage")
+    pl.add_argument("--options", default="", help="kind question : reponses proposees, separees par |")
+    pl.add_argument("--model", default="", help="modele de la session : haiku par defaut (mission "
+                    "cadree), sonnet si elle demande de l'arbitrage, jamais opus pour un executant ; "
+                    "a declarer au premier evenement, il vaut ensuite pour toute la session")
 
     sub.add_parser("render", help="reecrit le rendu sans ajouter d'evenement")
     sub.add_parser("status", help="resume court sur stdout")
+    pla = sub.add_parser("lancer", help="ouvre un onglet Terminal sur une tache planifiee")
+    pla.add_argument("--session", required=True)
+    pla.add_argument("--task", required=True)
+    pla.add_argument("--essai", action="store_true", help="ecrit le lanceur sans ouvrir le Terminal")
+    sub.add_parser("chat-pull", help="recupere les reponses donnees dans Google Chat (JSON)")
+    sub.add_parser("snapshot", help="JSON pour le pane : journal, contexte par session, questions")
 
     a = p.parse_args()
+    if a.cmd in ("snapshot", "status", "render", "lancer", "chat-pull"):
+        lire_pointeur()
+    if a.cmd == "chat-pull":
+        print(json.dumps(chat_pull(), ensure_ascii=False))
+        return 0
+    if a.cmd == "lancer":
+        print(lancer(a.session, a.task, a.essai))
+        return 0
+    if a.cmd == "snapshot":
+        ev = lire()
+        print(json.dumps({"journal": str(chemin_etat()), "out": str(chemin_sortie()),
+                          "existe": chemin_etat().exists(), "evenements": ev,
+                          "contextes": contextes(ev), "questions": questions_en_attente(ev),
+                          "terminees": sessions_terminees(ev), "lancees": sorted(lancees(ev))},
+                         ensure_ascii=False))
+        return 0
     if a.cmd == "log":
-        ajouter(a.session, a.task, a.kind, a.msg, a.ref)
+        # `planned` est pose par l'orchestratrice POUR une autre session, `answer` par le pane :
+        # ni l'un ni l'autre ne doit lier le transcript de l'appelant a la session nommee.
+        lie = a.kind not in ("planned", "answer")
+        if lie:
+            tr = trouver_transcript(a.session)
+            deja = {e["transcript"]: e["session"] for e in lire() if e.get("transcript")}
+            lie = tr if tr and deja.get(tr, a.session) == a.session else None
+        ev = ajouter(a.session, a.task, a.kind, a.msg, a.ref, a.model,
+                [o.strip() for o in a.options.split("|") if o.strip()],
+                lie or None,
+                a.cwd, Path(a.prompt_file).read_text(encoding="utf-8") if a.prompt_file else "")
+        ecrire_pointeur()
+        if a.kind == "question":
+            chat_post("question", {"qid": ev.get("id"), "session": a.session, "task": a.task,
+                                   "msg": a.msg, "options": ev.get("options", [])})
+        elif a.kind == "answer" and a.ref:
+            chat_post("answered_local", {"qid": a.ref, "answer": a.msg})
         print(f"[orch] {a.session} · {a.task} · {a.kind} → {ecrire_rendu()}")
     elif a.cmd == "render":
         print(f"[orch] rendu → {ecrire_rendu()}")
@@ -448,6 +807,80 @@ def _autotest() -> None:
         assert len(lire()) == 6
         ajouter("s3", "#3", "planned", "pas encore lancee")
         assert "⚪ À lancer" in rendre() and "1 à lancer" in rendre()
+        # modele par session : declare une fois, porte ensuite ; absent ou Opus executant = alerte
+        ajouter("s4", "#4", "planned", "maillage", model="sonnet")
+        ajouter("s4", "#4", "start", "go")
+        ajouter("s5", "#5", "planned", "gros lot", model="opus")
+        ajouter("ORCHESTRATRICE", "#0", "note", "pilote", model="opus")
+        m = modeles(lire())
+        assert m["s4"] == "sonnet" and m["s1"] == "", m
+        assert alerte_modele("s4", m["s4"]) == ""
+        assert alerte_modele("s1", "") == "modèle non déclaré"
+        assert alerte_modele("s5", "opus") == "exécutant en Opus"
+        assert alerte_modele("ORCHESTRATRICE", "opus") == ""
+        assert "| `s4` | sonnet |" in rendre() and "⚠️ exécutant en Opus" in rendre()
+        # questions : ne touchent pas l'etat de la tache, en attente jusqu'a un answer qui les cite
+        q = ajouter("s4", "#4", "question", "Lever le verrou ?", options=["oui", "non"])
+        assert etat(lire())[("s4", "#4")]["ev"]["kind"] == "start", "une question ne change pas l'etat"
+        assert [x["msg"] for x in questions_en_attente(lire())] == ["Lever le verrou ?"]
+        assert "❓ Questions en attente" in rendre() and "**2.** non" in rendre()
+        q2 = ajouter("s4", "#4", "question", "Et le second ?", options=["a", "b"])
+        assert q2["ts"][:16] == q["ts"][:16] and q2["id"] != q["id"], "deux questions, deux ids"
+        ajouter("PROPRIETAIRE", "#4", "answer", "oui", ref=q["id"])
+        assert [x["msg"] for x in questions_en_attente(lire())] == ["Et le second ?"], \
+            "repondre a une question ne retire pas sa voisine de la meme seconde"
+        ajouter("PROPRIETAIRE", "#4", "answer", "a", ref=q2["id"])
+        assert questions_en_attente(lire()) == []
+        # contexte : lu dans le dernier message assistant porteur d'usage
+        tr = Path(tmp) / "t.jsonl"
+        tr.write_text(json.dumps({"type": "assistant", "message": {"model": "claude-sonnet-5-5",
+                      "usage": {"input_tokens": 1000, "cache_creation_input_tokens": 9000,
+                                "cache_read_input_tokens": 40000}}}) + "\n"
+                      + json.dumps({"type": "system", "subtype": "compact_boundary"}) + "\n")
+        ajouter("s4", "#4", "progress", "suite", transcript=str(tr))
+        # lancement : le lanceur cible le depot et le modele, et porte le prompt intact
+        global LANCEMENTS
+        LANCEMENTS = Path(tmp) / "lanc"
+        ajouter("s6", "#6", "planned", "a lancer", model="haiku", cwd="/tmp/depot x", prompt='Tu es "s6".')
+        sh = Path(lancer("s6", "#6", essai=True)).read_text()
+        assert "cd '/tmp/depot x'" in sh and "exec claude --model haiku --permission-mode auto" in sh, sh
+        # injection : un cwd piege reste une chaine, un nom de session ou un modele piege est refuse
+        ajouter("s7", "#7", "planned", "x", model="haiku", cwd='/tmp/$(touch pwn)', prompt="p")
+        assert "cd '/tmp/$(touch pwn)'" in Path(lancer("s7", "#7", essai=True)).read_text()
+        for sess, mod in (("../evil", "haiku"), ("s8", "haiku; rm -rf ~")):
+            ajouter(sess, "#8", "planned", "x", model=mod, cwd="/tmp", prompt="p")
+            try:
+                lancer(sess, "#8", essai=True)
+                raise AssertionError(f"lancement accepte : {sess!r} {mod!r}")
+            except SystemExit:
+                pass
+        assert (Path(tmp) / "lanc" / "s6.txt").read_text() == 'Tu es "s6".'
+        # Chat : une reponse recue s'ecrit une fois, et jamais pour une question deja repondue
+        global chat_post
+        q9 = ajouter("s9", "#9", "question", "Via Chat ?", options=["oui", "non"])
+        vrai_post = chat_post
+        chat_post = lambda action, payload: {"answers": [{"qid": q9["id"], "answer": "oui"},
+                                                         {"qid": "inconnu", "answer": "x"}]}
+        recues = chat_pull()
+        assert [r["answer"] for r in recues] == ["oui"] and recues[0]["session"] == "s9", recues
+        assert chat_pull() == [], "une reponse deja ecrite ne revient pas"
+        chat_post = vrai_post
+        global STATUSLINE, CACHE_COMPACT
+        STATUSLINE, CACHE_COMPACT = Path(tmp) / "sl", Path(tmp) / "cc.json"
+        c = contextes(lire())["s4"]
+        assert c["tokens"] == 50000 and c["pct"] == 25 and c["compactions"] == 1 and c["estime"], c
+        # la statusline de la session fait foi : fenetre exacte, plus d'estimation
+        STATUSLINE.mkdir()
+        (STATUSLINE / "t.json").write_text(json.dumps({"window": 1000000, "pct": 5, "tokens": 50000, "model": "m[1m]"}))
+        c = contextes(lire())["s4"]
+        assert c["fenetre"] == 1000000 and c["pct"] == 5 and not c["estime"], c
+        # compactions comptees en increment : une compaction de plus, une de plus
+        with tr.open("a") as fh:
+            fh.write(json.dumps({"type": "system", "subtype": "compact_boundary"}) + "\n")
+        assert contextes(lire())["s4"]["compactions"] == 2
+        # le proprietaire n'est pas une session ; une session finie se replie
+        assert "PROPRIETAIRE" not in modeles(lire())
+        assert "s1" in sessions_terminees(lire()) and "s4" not in sessions_terminees(lire())
         md = rendre()
         assert md.startswith("![Orchestration]("), md[:80]
         svg = (chemin_etat().parent / "entete.svg").read_text(encoding="utf-8")
@@ -468,7 +901,7 @@ def _autotest() -> None:
             sys.argv = ["orch.py", "status"]
             code = main()
         assert code == 1 and "AUCUN JOURNAL" in err.getvalue(), (code, err.getvalue())
-        print("autotest orch.py : OK (7 evenements, 1 ligne corrompue ignoree, "
+        print("autotest orch.py : OK (11 evenements, 1 ligne corrompue ignoree, "
               "status sans journal = exit 1)")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
