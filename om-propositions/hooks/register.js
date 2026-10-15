@@ -86,12 +86,14 @@ async function charger($, forcer = false) {
   }
 }
 
-/** Commande copiee pour un shell : guillemets SIMPLES, ou bash n'interprete ni $(...) ni les
- *  backticks. Le texte vient des transcripts (donc, indirectement, de pages web lues par des
- *  sessions) : en guillemets doubles, un $(...) glisse dedans s'executait au collage. */
+/** Commande copiee pour un shell. Deux etages a neutraliser : claude.mk fait `"$(P)"`, donc make
+ *  developpe la valeur ($(shell …)) puis le shell de la recette la relit entre guillemets doubles
+ *  ($(…), backticks, \\, "). On echappe pour ce shell (\\ \" \` \$), le $ doublé pour make, et le
+ *  tout entre guillemets simples pour le shell ou l'on colle. Teste avec un vrai make, 2026-10-15. */
 function commande(i) {
-  const q = "'" + i.prompt.replace(/'/g, "'\\''") + "'"
-  return i.mode ? 'make ' + i.mode + ' P=' + q : i.prompt
+  if (!i.mode) return i.prompt
+  const v = i.prompt.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$$$$')
+  return 'make ' + i.mode + " P='" + v.replace(/'/g, "'\\''") + "'"
 }
 
 async function ouvrir($) {

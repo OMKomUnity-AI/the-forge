@@ -92,7 +92,7 @@ def ajouter(session: str, task: str, kind: str, msg: str, ref: str = "", model: 
         ev["model"] = model
     if options:
         ev["options"] = options
-    if kind == "question":
+    if kind in ("question", "planned"):
         # Id propre a la question : `session|ts` collisionnait quand une session pose plusieurs
         # questions dans la meme seconde, et UNE reponse les retirait toutes (2026-10-15).
         ev["id"] = uuid.uuid4().hex[:10]
@@ -329,10 +329,13 @@ def script_lancement(ev: dict) -> Path:
     return sh
 
 
-def lancer(session: str, task: str, essai: bool = False) -> str:
-    """Ouvre un onglet Terminal sur la tache `planned` la plus recente de (session, task)."""
+def lancer(session: str, task: str, essai: bool = False, ident: str = "") -> str:
+    """Ouvre un onglet Terminal sur une tache `planned` de (session, task) : celle d'id `ident` si
+    donne (le pane passe l'id de l'evenement dont il a AFFICHE le prompt : un `planned` ecrit entre
+    l'affichage et la confirmation ne peut pas s'y substituer ; le ts, a la seconde, n'est pas
+    unique), sinon la plus recente."""
     evs = [e for e in lire() if e["kind"] == "planned" and e["session"] == session
-           and e["task"] == task and e.get("prompt") and e.get("cwd")]
+           and e["task"] == task and e.get("prompt") and e.get("cwd") and (not ident or e.get("id") == ident)]
     if not evs:
         raise SystemExit(f"aucune tache planifiee lancable pour {session} {task} (--cwd et --prompt-file requis)")
     sh = script_lancement(evs[-1])
@@ -722,6 +725,7 @@ def main() -> int:
     pla.add_argument("--session", required=True)
     pla.add_argument("--task", required=True)
     pla.add_argument("--essai", action="store_true", help="ecrit le lanceur sans ouvrir le Terminal")
+    pla.add_argument("--id", default="", help="lance exactement l'evenement planned de cet id")
     sub.add_parser("chat-pull", help="recupere les reponses donnees dans Google Chat (JSON)")
     sub.add_parser("snapshot", help="JSON pour le pane : journal, contexte par session, questions")
 
@@ -732,7 +736,7 @@ def main() -> int:
         print(json.dumps(chat_pull(), ensure_ascii=False))
         return 0
     if a.cmd == "lancer":
-        print(lancer(a.session, a.task, a.essai))
+        print(lancer(a.session, a.task, a.essai, a.id))
         return 0
     if a.cmd == "snapshot":
         ev = lire()
@@ -842,7 +846,10 @@ def _autotest() -> None:
         global LANCEMENTS
         LANCEMENTS = Path(tmp) / "lanc"
         ajouter("s6", "#6", "planned", "a lancer", model="haiku", cwd="/tmp/depot x", prompt='Tu es "s6".')
-        sh = Path(lancer("s6", "#6", essai=True)).read_text()
+        # TOCTOU : un planned ecrit apres l'affichage (meme seconde) ne remplace pas celui affiche
+        ev6 = ajouter("s6", "#6", "planned", "a lancer", model="haiku", cwd="/tmp/depot x", prompt='Tu es "s6".')
+        ajouter("s6", "#6", "planned", "substitue", model="haiku", cwd="/tmp/depot x", prompt="PIEGE")
+        sh = Path(lancer("s6", "#6", essai=True, ident=ev6["id"])).read_text()
         assert "cd '/tmp/depot x'" in sh and "exec claude --model haiku --permission-mode auto" in sh, sh
         # injection : un cwd piege reste une chaine, un nom de session ou un modele piege est refuse
         ajouter("s7", "#7", "planned", "x", model="haiku", cwd='/tmp/$(touch pwn)', prompt="p")
