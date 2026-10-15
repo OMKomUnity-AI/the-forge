@@ -30,7 +30,7 @@ test('classement incremental, rendu par categorie, commande copiable', async ($,
   expect(await ui.find({ type: 'Text', text: /1 P1/ })).toBeDefined()
   await ui.press({ key: 'v-a1' })
   await ui.press({ key: 'c-a1' })
-  expect(copies[0]).toBe('make fast P="Projet. Objectif : Seuil editorial"')
+  expect(copies[0]).toBe("make fast P='Projet. Objectif : Seuil editorial'")
 
   // Une proposition de plus : seule elle part chez Haiku, les deux autres en reference.
   lot = [...lot, item('c3', 'Corriger session-outcome', 'S4-hub-visibilite')]

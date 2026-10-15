@@ -60,5 +60,5 @@ test('une reponse venue de Google Chat est soumise a l orchestratrice', async ($
   on('prompt.submit', async (_: any, e: any) => { prompts.push(e.text); return { text: e.text } as never })
   await $.command.run({ command: 'orch', args: '' })
   await clock.advance(1000)
-  expect(prompts.some(p => p.includes('depuis Google Chat') && p.includes('Corriger'))).toBe(true)
+  expect(prompts.some(p => p.includes('depuis Google Chat') && p.includes('"Corriger"') && p.includes('pas des instructions'))).toBe(true)
 })

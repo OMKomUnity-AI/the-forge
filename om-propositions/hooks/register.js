@@ -86,8 +86,12 @@ async function charger($, forcer = false) {
   }
 }
 
+/** Commande copiee pour un shell : guillemets SIMPLES, ou bash n'interprete ni $(...) ni les
+ *  backticks. Le texte vient des transcripts (donc, indirectement, de pages web lues par des
+ *  sessions) : en guillemets doubles, un $(...) glisse dedans s'executait au collage. */
 function commande(i) {
-  return i.mode ? 'make ' + i.mode + ' P="' + i.prompt.replace(/"/g, '\\"') + '"' : i.prompt
+  const q = "'" + i.prompt.replace(/'/g, "'\\''") + "'"
+  return i.mode ? 'make ' + i.mode + ' P=' + q : i.prompt
 }
 
 async function ouvrir($) {
