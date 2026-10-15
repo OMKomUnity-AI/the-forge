@@ -405,10 +405,20 @@ def main() -> int:
     elif a.cmd == "render":
         print(f"[orch] rendu → {ecrire_rendu()}")
     else:
+        # Nomme TOUJOURS le journal lu. Un « 0 en cours » muet ne distingue pas « rien a
+        # faire » de « mauvais depot » : lancee depuis un autre repertoire sans
+        # CLAUDE_PROJECT_DIR, la commande lit un journal vide et affiche des zeros
+        # parfaitement credibles. Constate en conditions reelles le 2026-10-15.
+        journal = chemin_etat()
+        if not journal.exists():
+            print(f"AUCUN JOURNAL a {journal}", file=sys.stderr)
+            print("Lance la commande depuis le depot orchestre, ou passe "
+                  "CLAUDE_PROJECT_DIR=<depot>.", file=sys.stderr)
+            return 1
         st = etat(lire())
         n = lambda *k: sum(1 for v in st.values() if v["ev"]["kind"] in k)
         print(f"{n('start', 'progress')} en cours · {n('review-request')} review · "
-              f"{n('blocked')} bloqué · {n('done', 'review-ok')} fini")
+              f"{n('blocked')} bloqué · {n('done', 'review-ok')} fini   [{journal}]")
     return 0
 
 
@@ -450,7 +460,16 @@ def _autotest() -> None:
         assert "https://" not in html.split("<style>")[0], "aucune ressource distante"
         ecrire_rendu()
         assert Path(os.environ["ORCH_OUT"]).exists()
-        print("autotest orch.py : OK (7 evenements, 1 ligne corrompue ignoree)")
+        # status sur un depot sans journal doit ECHOUER bruyamment, pas afficher des zeros
+        import io, contextlib
+        os.environ["ORCH_DIR"] = str(Path(tmp) / "vide")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            sys.argv = ["orch.py", "status"]
+            code = main()
+        assert code == 1 and "AUCUN JOURNAL" in err.getvalue(), (code, err.getvalue())
+        print("autotest orch.py : OK (7 evenements, 1 ligne corrompue ignoree, "
+              "status sans journal = exit 1)")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
