@@ -1,0 +1,6 @@
+{
+  "name": "om-orchestration",
+  "version": "0.1.0",
+  "description": "Un pane lateral qui suit en direct l'etat de plusieurs sessions Claude Code orchestrees",
+  "author": { "name": "OMKomUnity", "url": "https://omkomunity.ai" }
+}

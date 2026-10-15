@@ -64,6 +64,29 @@ Everything worth having at the bottom of a Claude Code session, in pure `bash` +
 
 → **[Full guide and install](./om-statusline)**
 
+### 🕉️ [om-orchestration](./om-orchestration) — a side pane for several orchestrated sessions
+
+A **mod**: it draws a pane **beside the transcript**, in the session you orchestrate from. When one session reviews the work of five others, the state otherwise lives in six terminals you can't see at once — a status line holds one line, a Markdown file lives outside Claude Code.
+
+Every session appends to one **append-only** journal; the mod only reads it and recomputes the state on each draw. A line half-written by another session is skipped, never fatal, and the last event for a task wins — so a late `done` is never hidden behind an older `blocked`.
+
+```
+OMKomUnity  orchestration
+5 en cours  1 review  0 bloque  2 fini  7 a lancer
+
+REVIEW EN ATTENTE  (1)
+? #3 S2-clusters  12m
+   consolidation cluster GEO : deux options a arbitrer
+
+EN COURS  (5)
+> #1 S1-maillage  18m
+   3 ancres posees depuis /, /fondateur, /manifeste
+```
+
+Reads one file, makes no network request, starts no process — `claude plugin validate` prints the proof. Ships with `orch.py`, which writes the journal and also renders a Markdown file and an HTML panel for the surfaces where a mod can't draw.
+
+→ **[Full guide and install](./om-orchestration)**
+
 ## Repository structure
 
 ```
