@@ -486,6 +486,30 @@ export function register(on) {
       })),
     ]
 
+    // Les propositions de /close dont la session dediee a ete lancee (om-propositions les marque
+    // et les retire de sa liste : elles ne sont plus « a lancer »). Elles arrivent juste apres les
+    // sessions ouvertes, parce que c'est la meme question : qu'est-ce qui tourne en ce moment.
+    // Un volet lance depuis /propositions n'appelle pas forcement orch.py log : sans cette
+    // section, il est invisible du pilotage alors qu'il consomme une session.
+    const pl = (snap && snap.propositions_lancees) || []
+    const plVivantes = pl.filter((x) => x.vivante)
+    const blocPropositions = pl.length === 0 ? [] : [
+      txt(' '),
+      txt('PROPOSITIONS LANCEES  (' + plVivantes.length + ' en vol)', { color: C.teal, bold: true }),
+      ...plVivantes.map((x) => Box({
+        flexDirection: 'column',
+        children: [
+          ligne([txt('> ', { color: C.teal, bold: true }), txt(String(x.titre).slice(0, 62), { color: C.paper })]),
+          txt('   ' + x.projet + ' · ' + (x.nom || x.session) + (x.mode ? ' · make ' + x.mode : '')
+            + (x.ts ? ' · depuis ' + duree(x.ts) : ''), { dimColor: true }),
+        ],
+      })),
+      // Les lancees dont la session s'est terminee ne prennent pas une ligne chacune : elles ne
+      // demandent plus rien. Leur nombre, lui, dit ce que la vague a deja consomme.
+      ...(pl.length - plVivantes.length > 0
+        ? [txt('  ' + (pl.length - plVivantes.length) + ' lancee(s) plus tot, session terminee', { dimColor: true })] : []),
+    ]
+
     // Pied de pane : les questions en attente, une par bloc, ses reponses en boutons et un
     // champ libre pour une autre reponse — la forme d'une question posee dans le transcript.
     const qs = (snap && snap.questions) || []
@@ -537,6 +561,7 @@ export function register(on) {
         compteurs,
         ...blocSessions,
         ...blocOuvertes,
+        ...blocPropositions,
         ...section('bloque - action requise', bloques, C.saumon),
         ...section('review en attente', attente, C.or),
         ...section('en cours', enCours, C.ciel),

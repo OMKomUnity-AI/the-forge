@@ -15,6 +15,12 @@ const SNAP = {
     { nom: 'deja-close', id: 'cccc1111-2222-3333-4444-555566667777', kind: 'interactive', statut: 'idle', cwd: 'depot', maj: '2026-10-15T08:06:00+00:00', close: true, dernier: 'close' },
   ],
   questions: [{ ts: '2026-10-15T08:05:00+00:00', session: 'Q1-adoption', task: '#Q1', kind: 'question', msg: 'Retirer le chiffre ?', ref: '', options: ['oui', 'non'], id: 'Q1-adoption|2026-10-15T08:05:00+00:00' }],
+  // Propositions de /close dont la session dediee a ete lancee (orch.py propositions_lancees) :
+  // une en vol, une dont la session est terminee.
+  propositions_lancees: [
+    { titre: 'Monitoring continu des paths sensibles', projet: 'Project-OMKOMUNITY', mode: 'full', session: 'bbbb1111', nom: 'veille-nuit', vivante: true, ts: '2026-10-15T07:00:00Z' },
+    { titre: 'Durcir le gate editorial', projet: 'CLAUDE-boilerplate', mode: 'think', session: 'dead0000', nom: '', vivante: false, ts: '2026-10-14T07:00:00Z' },
+  ],
 }
 
 function faux(on: any, appels: string[][], prompts: string[]) {
@@ -139,5 +145,34 @@ test('sur mobile le pane rend sans champ de saisie et laisse repondre au bouton'
   expect(await ui.find({ key: 'ok-G2-gate-#G2' })).toBeDefined()
   expect(await ui.find({ key: 'mod-sonnet-S9-neuve-#S9' })).toBeDefined()
   expect(await ui.find({ key: 'pt-aaaa1111-2222-3333-4444-555566667777' })).toBeDefined()
+  await ui.unmount()
+})
+
+// Un volet lance depuis /propositions n'appelle pas forcement orch.py log : sans cette section il
+// consomme une session sans etre visible du pilotage. Celles dont la session est finie ne prennent
+// pas une ligne chacune, mais leur nombre reste dit.
+test('les propositions lancees apparaissent, en vol nommees et les finies comptees', async ($, on) => {
+  faux(on, [], [])
+  await $.command.run({ command: 'orch', args: '' })
+  const ui = await $.ui.mount({ plugin: 'om-orchestration', surface: 'terminal', component: 'Pane', props: {} as never, requestId: 'om-orchestration' })
+  expect(await ui.find({ type: 'Text', text: /PROPOSITIONS LANCEES {2}\(1 en vol\)/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Monitoring continu des paths sensibles/ })).toBeDefined()
+  // la session vivante est nommee, pas son id : c'est elle qu'on retrouve juste au-dessus
+  expect(await ui.find({ type: 'Text', text: /Project-OMKOMUNITY · veille-nuit · make full/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /1 lancee\(s\) plus tot, session terminee/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Durcir le gate editorial/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+// Le mod ne depend pas de om-propositions : sans le fichier, orch.py ne rend pas la cle et la
+// section disparait sans un mot — pas un bloc vide, pas une erreur.
+test('sans propositions lancees la section est absente', async ($, on) => {
+  const sans = { ...SNAP, propositions_lancees: [] }
+  on('process.run', async (_: any, e: any) => ({ value: { exitCode: 0, stdout: e.argv.includes('snapshot') ? JSON.stringify(sans) : '', stderr: '' } }) as never)
+  on('ui.open', async () => ({ value: undefined }) as never)
+  await $.command.run({ command: 'orch', args: '' })
+  const ui = await $.ui.mount({ plugin: 'om-orchestration', surface: 'terminal', component: 'Pane', props: {} as never, requestId: 'om-orchestration' })
+  expect(await ui.find({ type: 'Text', text: /PROPOSITIONS LANCEES/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /SESSIONS OUVERTES/ })).toBeDefined()
   await ui.unmount()
 })

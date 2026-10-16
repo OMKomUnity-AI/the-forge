@@ -11,6 +11,10 @@ make the decisions.
 
 - counters: in progress, awaiting review, blocked, done, planned
 - every live session that has not closed yet, journal or not — with its last word and its context
+- the `/close` propositions whose dedicated session has been launched, the in-flight ones named by
+  their session (the rest counted on one line). A task launched from the `/propositions` pane does
+  not necessarily call `orch.py log`: without this it eats a session while staying invisible here.
+  Needs `om-propositions`; without its file the section simply does not exist
 - one block per task, newest state first, with the session that owns it and how long it has run
 - blocked and awaiting-review sections first — they are the ones that need you
 - the last six journal entries

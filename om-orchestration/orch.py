@@ -355,6 +355,41 @@ def vivantes() -> list:
     return res
 
 
+# Les propositions de /close dont la session dediee a ete lancee (om-propositions les marque
+# `lancee` et les retire de sa propre liste : elles ne sont plus « a lancer »). Le pane /orch est
+# l'endroit ou elles comptent desormais — un volet en vol dont le journal d'orchestration ne sait
+# rien, parce que la session lancee depuis /propositions n'appelle pas forcement `orch.py log`.
+PROPOSITIONS = Path.home() / ".claude" / "propositions" / "propositions.jsonl"
+
+
+def propositions_lancees(vivantes_: list, maxi: int = 20) -> list:
+    """Les propositions marquees `lancee`, les plus recentes d'abord, avec un drapeau `vivante`
+    vrai si la session lancee tourne encore (son id commence par `lancee.session`, qui est un
+    prefixe de 8 caracteres). Fichier absent ou illisible -> liste vide : ce mod n'a pas besoin
+    de om-propositions pour fonctionner, il l'utilise s'il est la."""
+    if not PROPOSITIONS.exists():
+        return []
+    ids = {v.get("id", ""): v.get("nom", "") for v in vivantes_}
+    out = []
+    try:
+        with PROPOSITIONS.open(encoding="utf-8", errors="replace") as fh:
+            for ligne in fh:
+                try:
+                    it = json.loads(ligne)
+                except json.JSONDecodeError:
+                    continue  # une ligne illisible ne doit pas couter les autres
+                l = it.get("lancee")
+                if not isinstance(l, dict) or not l.get("session"):
+                    continue
+                nom = next((n for i, n in ids.items() if i.startswith(l["session"])), "")
+                out.append({"titre": it.get("titre", ""), "projet": it.get("projet", ""),
+                            "mode": it.get("mode", ""), "session": l["session"],
+                            "nom": nom, "vivante": bool(nom), "ts": l.get("ts", "")})
+    except OSError:
+        return []
+    return sorted(out, key=lambda x: x["ts"], reverse=True)[:maxi]
+
+
 def lancees(evenements: list) -> set:
     """Sessions qui ont au moins un evenement au-dela du `planned` pose par l'orchestratrice."""
     return {ev["session"] for ev in evenements if ev["kind"] not in ("planned", "answer")}
@@ -835,11 +870,12 @@ def main() -> int:
         return 0
     if a.cmd == "snapshot":
         ev = lire()
+        viv = vivantes()
         print(json.dumps({"journal": str(chemin_etat()), "out": str(chemin_sortie()),
                           "existe": chemin_etat().exists(), "evenements": ev,
                           "contextes": contextes(ev), "questions": questions_en_attente(ev),
                           "terminees": sessions_terminees(ev), "lancees": sorted(lancees(ev)),
-                          "vivantes": vivantes()},
+                          "vivantes": viv, "propositions_lancees": propositions_lancees(viv)},
                          ensure_ascii=False))
         return 0
     if a.cmd == "log":
@@ -972,6 +1008,27 @@ def _autotest() -> None:
             raise AssertionError("changer_modele accepte une tache inexistante")
         except SystemExit:
             pass
+        # propositions lancees : le pane /orch les montre quand om-propositions les a marquees.
+        # `vivante` dit si la session lancee tourne encore ; une ligne illisible ne coute rien.
+        global PROPOSITIONS
+        PROPOSITIONS = Path(tmp) / "propositions.jsonl"
+        PROPOSITIONS.write_text("\n".join([
+            json.dumps({"titre": "Gate images", "projet": "P", "mode": "full", "ts": "2026-10-16T08:00:00Z",
+                        "lancee": {"session": "abcd1234", "ts": "2026-10-16T09:00:00Z"}}),
+            json.dumps({"titre": "Plus vieille", "projet": "P", "ts": "2026-10-15T08:00:00Z",
+                        "lancee": {"session": "eeee9999", "ts": "2026-10-15T09:00:00Z"}}),
+            json.dumps({"titre": "Jamais lancee", "projet": "P", "ts": "2026-10-16T08:00:00Z"}),
+            "{ligne tronquee",
+        ]), encoding="utf-8")
+        viv = [{"id": "abcd1234-1111-2222-3333-444455556666", "nom": "S-gate-images"}]
+        pl = propositions_lancees(viv)
+        assert [x["titre"] for x in pl] == ["Gate images", "Plus vieille"], pl
+        assert pl[0]["vivante"] and pl[0]["nom"] == "S-gate-images", pl[0]
+        assert not pl[1]["vivante"] and pl[1]["nom"] == "", pl[1]
+        assert propositions_lancees(viv, maxi=1) == [pl[0]], "le plafond garde les plus recentes"
+        PROPOSITIONS = Path(tmp) / "absent.jsonl"
+        assert propositions_lancees(viv) == [], "fichier absent : aucune section, aucune erreur"
+
         # Chat : une reponse recue s'ecrit une fois, et jamais pour une question deja repondue
         global chat_post
         q9 = ajouter("s9", "#9", "question", "Via Chat ?", options=["oui", "non"])
