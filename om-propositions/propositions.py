@@ -114,7 +114,9 @@ def fusionner(store: dict, items: list) -> tuple:
             store[cle] = item
             nb_nouveaux += 1
         elif item.get("ts", "") > store[cle].get("ts", ""):
-            store[cle] = item
+            # Le scrape ne connait pas le suivi (copiee/lancee) : on le garde, sinon une proposition
+            # relancee reapparaitrait dans la liste a chaque rafraichissement.
+            store[cle] = {**{k: store[cle][k] for k in ("copiee", "lancee") if k in store[cle]}, **item}
     return store, nb_nouveaux
 
 
@@ -142,6 +144,54 @@ def ecrire_store(chemin: str, store: dict) -> None:
             except OSError:
                 pass
         raise
+
+
+def _norm(t: str) -> str:
+    return " ".join((t or "").split())
+
+
+def premiers_prompts(racine: Path, jours: float) -> dict:
+    """transcript -> (premier message utilisateur normalise, ts) des transcripts recents.
+    `make <mode> P="..."` passe le prompt tel quel : il EST le premier message de la session lancee."""
+    limite = time.time() - jours * 86400
+    out = {}
+    for f in racine.glob("*/*.jsonl"):
+        try:
+            if f.stat().st_mtime < limite:
+                continue
+            with f.open(encoding="utf-8", errors="replace") as fh:
+                for n, ligne in enumerate(fh):
+                    if n > 40:
+                        break
+                    try:
+                        o = json.loads(ligne)
+                    except json.JSONDecodeError:
+                        continue
+                    t = textes(o).strip()
+                    if o.get("type") == "user" and t and not t.startswith("<"):
+                        out[str(f)] = (_norm(t), o.get("timestamp", ""))
+                        break
+        except OSError:
+            continue
+    return out
+
+
+def marquer_lancements(store: dict, racine: Path, jours: float) -> int:
+    """Pose `lancee` sur chaque proposition dont le prompt ouvre une AUTRE session, plus recente.
+    Retourne le nombre de propositions nouvellement marquees."""
+    attente = {k: v for k, v in store.items() if not v.get("lancee") and len(_norm(v.get("prompt", ""))) >= 40}
+    if not attente:
+        return 0
+    n = 0
+    debuts = premiers_prompts(racine, jours)
+    for k, v in attente.items():
+        cle = _norm(v["prompt"])[:100]
+        for tr, (txt, ts) in debuts.items():
+            if tr != v.get("transcript") and ts >= v.get("ts", "") and cle in txt:
+                v["lancee"] = {"session": Path(tr).stem[:8], "ts": ts, "transcript": tr}
+                n += 1
+                break
+    return n
 
 
 def collecter(racine: Path, jours: float) -> list:
@@ -254,6 +304,7 @@ if __name__ == "__main__":
     a.add_argument("--racine", default=str(Path.home() / ".claude" / "projects"))
     a.add_argument("--store", default=STORE_DEFAUT)
     a.add_argument("--sync", action="store_true")
+    a.add_argument("--marquer", default="", help="id d'une proposition dont la commande vient d'etre copiee")
     a = a.parse_args()
 
     # Scraper, lire le store, fusionner, écrire
@@ -268,10 +319,15 @@ if __name__ == "__main__":
 
     avant = {k: v.get("ts", "") for k, v in store.items()}
     store, nb_nouveaux = fusionner(store, items_scrape)
+    suivi = 0
+    if a.marquer and a.marquer in store and not store[a.marquer].get("copiee"):
+        store[a.marquer]["copiee"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        suivi += 1
+    suivi += marquer_lancements(store, Path(a.racine), max(a.jours, 3))
     # ponytail: pas de verrou entre sessions concurrentes. os.replace garde le fichier toujours
     # entier ; une fusion perdue par une ecriture simultanee revient au scrape suivant (30 s).
     # Verrou de fichier si un jour deux sessions ecrivent vraiment en meme temps.
-    if nb_nouveaux or any(avant.get(k) != v.get("ts", "") for k, v in store.items()):
+    if nb_nouveaux or suivi or any(avant.get(k) != v.get("ts", "") for k, v in store.items()):
         ecrire_store(a.store, store)
 
     if a.sync:

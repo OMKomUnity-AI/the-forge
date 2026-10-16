@@ -96,6 +96,14 @@ function commande(i) {
   return 'make ' + i.mode + " P='" + v.replace(/'/g, "'\\''") + "'"
 }
 
+/** La commande vient d'etre copiee : on le note dans le fichier perenne. La detection du vrai
+ *  lancement (le prompt ouvre une autre session) se fait au passage suivant de propositions.py. */
+async function marquer($, id) {
+  await $.process.run(['python3', $.plugin.root + '/propositions.py', '--sync', '--marquer', id], { timeoutMs: 20000 })
+  await charger($)
+  $.ui.invalidate('ui.render')
+}
+
 async function ouvrir($) {
   await $.ui.open({ id: PANE, title: 'Propositions', closeOnEscape: true })
   if (items.length === 0) await charger($)
@@ -115,7 +123,8 @@ export function register(on) {
       const ids = new Set(items.map((i) => i.id))
       // Plus de toast (fenetres flottantes) : un indicateur de statut permanent + le pane lateral,
       // ouvert d'office une fois par session des qu'il y a des propositions (>= 144 colonnes).
-      $.ui.status(items.length ? items.length + ' propositions · /propositions' : undefined)
+      const restantes = items.filter((i) => !i.lancee).length
+      $.ui.status(restantes ? restantes + ' propositions · /propositions' : undefined)
       if (!base && items.length) await $.ui.open({ id: PANE, title: 'Propositions', closeOnEscape: true })
       base = ids
       $.ui.invalidate('ui.render')
@@ -139,7 +148,8 @@ export function register(on) {
       const d = classement[i.id] && classement[i.id].doublon_de
       if (d && d !== i.id && items.some((x) => x.id === d)) (doublons[d] = doublons[d] || []).push(i)
     }
-    const visibles = items.filter((i) => !(classement[i.id] && classement[i.id].doublon_de && doublons[classement[i.id].doublon_de]))
+    const lancees = items.filter((i) => i.lancee)
+    const visibles = items.filter((i) => !i.lancee && !(classement[i.id] && classement[i.id].doublon_de && doublons[classement[i.id].doublon_de]))
     const cat = (i) => (classement[i.id] && classement[i.id].categorie) || 'Non classees'
     const prio = (i) => Number((classement[i.id] && classement[i.id].priorite) || 9)
     const groupes = {}
@@ -152,8 +162,8 @@ export function register(on) {
       txt('OM', { bold: true, color: C.paper }), txt('Kom', { bold: true, color: C.magenta }),
       txt('Unity', { bold: true, color: C.teal }), txt('  propositions', { dimColor: true }),
     ])
-    const compteurs = txt(visibles.length + ' a lancer · ' + nP1 + ' P1 · ' + (items.length - visibles.length)
-      + ' doublons replies · fichier perenne', { dimColor: true })
+    const compteurs = txt(visibles.length + ' a lancer · ' + nP1 + ' P1 · ' + (items.length - visibles.length - lancees.length)
+      + ' doublons replies · ' + lancees.length + ' lancees · fichier perenne', { dimColor: true })
 
     const carte = (i) => {
       const k = classement[i.id] || {}
@@ -166,13 +176,13 @@ export function register(on) {
             txt((p < 9 ? 'P' + p : '··') + ' ', { color: COULEUR_P[p] || C.muted, bold: true }),
             Button({ key: 'v-' + i.id, label: i.titre.slice(0, 70), onPress: () => { ouvert = ouvert === i.id ? null : i.id; $.ui.invalidate('ui.render') } }),
           ]),
-          txt('   ' + i.projet + ' · ' + i.session + ' · ' + (i.mode ? 'make ' + i.mode : 'sans prompt') + ' · ' + i.ts.slice(5, 10)
+          txt('   ' + i.projet + ' · ' + i.session + ' · ' + (i.mode ? 'make ' + i.mode : 'sans prompt') + ' · ' + i.ts.slice(5, 10) + (i.copiee ? ' · copiee' : '')
             + (plus.length ? '  +' + plus.length + ' (' + plus.join(', ') + ')' : ''), { dimColor: true }),
           ...(k.raison ? [txt('   ' + k.raison, { color: COULEUR_P[p] || C.muted })] : []),
           ...(ouvert === i.id ? [
             txt('   ' + i.prompt.slice(0, 600)),
             ligne([Button({ key: 'c-' + i.id, label: 'Copier la commande', variant: 'primary',
-              onPress: (press) => { void $.ui.copy({ text: commande(i), surface: press.surface }) } })]),
+              onPress: (press) => { void $.ui.copy({ text: commande(i), surface: press.surface }); void marquer($, i.id) } })]),
           ] : []),
         ],
       })
@@ -188,6 +198,12 @@ export function register(on) {
           txt(c.toUpperCase() + '  (' + groupes[c].length + ')', { bold: true, color: C.ciel }),
           ...groupes[c].sort((a, b) => prio(a) - prio(b) || b.ts.localeCompare(a.ts)).map(carte),
         ]),
+        ...(lancees.length ? [
+          txt(' '),
+          txt('LANCEES  (' + lancees.length + ')', { bold: true, color: C.teal }),
+          ...lancees.sort((x, y) => y.lancee.ts.localeCompare(x.lancee.ts)).slice(0, 8).map((i) =>
+            txt('  v ' + i.titre.slice(0, 56) + '  → ' + i.lancee.session, { dimColor: true })),
+        ] : []),
         txt(' '),
         ligne([
           Button({ key: 'reclasser', label: 'Re-classer (' + MODELE + ')', onPress: () => { void charger($, true).then(() => $.ui.invalidate('ui.render')) } }),
