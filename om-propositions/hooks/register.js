@@ -182,14 +182,14 @@ export function register(on) {
         children: [
           ligne([
             txt((p < 9 ? 'P' + p : '··') + ' ', { color: COULEUR_P[p] || C.muted, bold: true }),
-            Button({ key: 'v-' + i.id, label: i.titre.slice(0, 70), onPress: () => { ouvert = ouvert === i.id ? null : i.id; $.ui.invalidate('ui.render') } }),
-            ...(i.lien && Link ? [txt(' '), Link({ key: 'l-' + i.id, href: i.lien, label: '↗ session' })] : []),
+            Button({ key: 'v-' + i.id, label: i.titre.slice(0, 48), onPress: () => { ouvert = ouvert === i.id ? null : i.id; $.ui.invalidate('ui.render') } }),
           ]),
           txt('   ' + i.projet + ' · ' + i.session + ' · ' + (i.mode ? 'make ' + i.mode : 'sans prompt') + ' · ' + i.ts.slice(5, 10) + (i.copiee ? ' · copiee' : '')
             + (plus.length ? '  +' + plus.length + ' (' + plus.join(', ') + ')' : ''), { dimColor: true }),
           ...(k.raison ? [txt('   ' + k.raison, { color: COULEUR_P[p] || C.muted })] : []),
           ...(ouvert === i.id ? [
             txt('   ' + i.prompt.slice(0, 600)),
+            ...(i.lien && Link ? [ligne([txt('   session emettrice : ', { dimColor: true }), Link({ key: 'l-' + i.id, href: i.lien, label: i.lien.startsWith('https') ? 'ouvrir' : 'transcript' })])] : []),
             ligne([Button({ key: 'c-' + i.id, label: 'Copier la commande', variant: 'primary',
               onPress: (press) => { void $.ui.copy({ text: commande(i), surface: press.surface }); void marquer($, i.id) } }),
               Button({ key: 's-' + i.id, label: 'Supprimer', onPress: () => { void supprimer($, i.id) } })]),
