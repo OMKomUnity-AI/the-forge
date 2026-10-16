@@ -116,7 +116,7 @@ def fusionner(store: dict, items: list) -> tuple:
         elif item.get("ts", "") > store[cle].get("ts", ""):
             # Le scrape ne connait pas le suivi (copiee/lancee) : on le garde, sinon une proposition
             # relancee reapparaitrait dans la liste a chaque rafraichissement.
-            store[cle] = {**{k: store[cle][k] for k in ("copiee", "lancee") if k in store[cle]}, **item}
+            store[cle] = {**{k: store[cle][k] for k in ("copiee", "lancee", "supprimee") if k in store[cle]}, **item}
     return store, nb_nouveaux
 
 
@@ -304,6 +304,7 @@ if __name__ == "__main__":
     a.add_argument("--racine", default=str(Path.home() / ".claude" / "projects"))
     a.add_argument("--store", default=STORE_DEFAUT)
     a.add_argument("--sync", action="store_true")
+    a.add_argument("--supprimer", default="", help="id d'une proposition a retirer des listes (marque, pas effacement)")
     a.add_argument("--marquer", default="", help="id d'une proposition dont la commande vient d'etre copiee")
     a = a.parse_args()
 
@@ -320,6 +321,10 @@ if __name__ == "__main__":
     avant = {k: v.get("ts", "") for k, v in store.items()}
     store, nb_nouveaux = fusionner(store, items_scrape)
     suivi = 0
+    # Marque et non effacement : le scrape des 3 derniers jours reinjecterait la ligne sinon.
+    if a.supprimer and a.supprimer in store and not store[a.supprimer].get("supprimee"):
+        store[a.supprimer]["supprimee"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        suivi += 1
     if a.marquer and a.marquer in store and not store[a.marquer].get("copiee"):
         store[a.marquer]["copiee"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         suivi += 1
@@ -337,7 +342,7 @@ if __name__ == "__main__":
         print(f"{nb_nouveaux} {s} proposition(s), {total} au total dans {a.store}")
     else:
         # Mode défaut : JSON avec tout le store
-        items_tries = sorted(store.values(), key=lambda x: x.get("ts", ""), reverse=True)
+        items_tries = sorted((v for v in store.values() if not v.get("supprimee")), key=lambda x: x.get("ts", ""), reverse=True)
         print(json.dumps({"genere": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                           "jours": a.jours,
                           "items": items_tries,

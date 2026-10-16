@@ -104,6 +104,14 @@ async function marquer($, id) {
   $.ui.invalidate('ui.render')
 }
 
+/** Retire la proposition des listes : marque `supprimee` dans le fichier perenne, puis recharge. */
+async function supprimer($, id) {
+  await $.process.run(['python3', $.plugin.root + '/propositions.py', '--sync', '--supprimer', id], { timeoutMs: 20000 })
+  items = items.filter((i) => i.id !== id)
+  ouvert = null
+  $.ui.invalidate('ui.render')
+}
+
 async function ouvrir($) {
   await $.ui.open({ id: PANE, title: 'Propositions', closeOnEscape: true })
   if (items.length === 0) await charger($)
@@ -182,7 +190,8 @@ export function register(on) {
           ...(ouvert === i.id ? [
             txt('   ' + i.prompt.slice(0, 600)),
             ligne([Button({ key: 'c-' + i.id, label: 'Copier la commande', variant: 'primary',
-              onPress: (press) => { void $.ui.copy({ text: commande(i), surface: press.surface }); void marquer($, i.id) } })]),
+              onPress: (press) => { void $.ui.copy({ text: commande(i), surface: press.surface }); void marquer($, i.id) } }),
+              Button({ key: 's-' + i.id, label: 'Supprimer', onPress: () => { void supprimer($, i.id) } })]),
           ] : []),
         ],
       })
