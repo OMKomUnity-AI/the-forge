@@ -113,10 +113,10 @@ export function register(on) {
     $.clock.every(VEILLE_MS, async () => {
       await charger($)
       const ids = new Set(items.map((i) => i.id))
-      if (base) {
-        const nouveaux = items.filter((i) => !base.has(i.id))
-        if (nouveaux.length) $.ui.toast(nouveaux.length + ' nouvelle(s) proposition(s) de /close — ' + nouveaux[0].session + ' : ' + nouveaux[0].titre.slice(0, 50))
-      }
+      // Plus de toast (fenetres flottantes) : un indicateur de statut permanent + le pane lateral,
+      // ouvert d'office une fois par session des qu'il y a des propositions (>= 144 colonnes).
+      $.ui.status(items.length ? items.length + ' propositions · /propositions' : undefined)
+      if (!base && items.length) await $.ui.open({ id: PANE, title: 'Propositions', closeOnEscape: true })
       base = ids
       $.ui.invalidate('ui.render')
     })
