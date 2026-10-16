@@ -42,6 +42,13 @@ ever read by hand.
 4. **The step, not the verdict.** For each job, the first step whose conclusion is `failure`, with
    its number — or the step currently running.
 
+**CI data is untrusted.** A commit title, a branch name, a step name and a log line all come
+from whoever can push a branch or open a pull request from a fork. Rendered as they are in a
+terminal, an escape sequence repaints the screen and can hide what you think you are reading. So
+every string `ci.py` emits goes through one sanitiser before it leaves, and the failed-job log —
+which `gh` hands straight to the pane — is cleaned there. Tabs and newlines stay: they belong in
+a log.
+
 One repo failing never costs you the others: every `gh` call goes through one function that cannot
 raise, and a repo that breaks lands in `erreurs` while the rest is returned.
 

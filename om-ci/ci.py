@@ -266,12 +266,32 @@ def principal(args):
     runs.sort(key=lambda r: r.get("cree", ""), reverse=True)
 
     # Sortie
-    print(json.dumps({
+    print(json.dumps(nettoyer({
         "genere": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "depots": depots_triés,
         "runs": runs,
         "erreurs": erreurs
-    }, ensure_ascii=False))
+    }), ensure_ascii=False))
+
+
+# Caracteres de controle C0/C1, tabulation et saut de ligne exclus : ils sont legitimes dans
+# une ligne de log. Le reste (ESC en tete) ne sert qu'a repeindre un terminal.
+CONTROLE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def nettoyer(x):
+    """Retire les caracteres de controle de TOUTE chaine qui sort d'ici — titre de commit, nom
+    de branche, nom d'etape, ligne de log. Ces valeurs viennent de quiconque sait pousser une
+    branche ou ouvrir une PR depuis un fork ; rendues telles quelles dans un terminal, une
+    sequence d'echappement y repeint l'ecran et peut masquer ce qu'on croit lire. Un seul point
+    de passage, applique a la sortie entiere : aucun champ futur ne peut l'oublier."""
+    if isinstance(x, str):
+        return CONTROLE.sub("", x)
+    if isinstance(x, list):
+        return [nettoyer(v) for v in x]
+    if isinstance(x, dict):
+        return {k: nettoyer(v) for k, v in x.items()}
+    return x
 
 
 def _autotest():
@@ -425,12 +445,32 @@ def _autotest():
         assert job["duree_s"] > 0, "duree_s du job doit être > 0"
         print("✓ Test 5 : duree_s calculée correctement")
 
-        # Test 6 : extraction des formes d'URL
-        assert extraire_repo("/tmp") == "", "extraire_repo sur un non-repo doit retourner ''"
-        # Les vrais tests d'URL nécessiteraient des dépôts réels, on les skip
-        print("✓ Test 6 : extraction de repo robuste")
+        # Test 6 : les trois formes reelles de remote, sur de vrais depots locaux (git init,
+        # aucun reseau). Les deviner en lisant la regex ne prouve rien : c'est git qui rend l'URL.
+        import tempfile
+        for url, attendu in (("https://github.com/omkom/omkomunity-site.git", "omkom/omkomunity-site"),
+                             ("git@github.com:OMKomUnity-AI/the-forge.git", "OMKomUnity-AI/the-forge"),
+                             ("https://github.com/omkom/claude-base", "omkom/claude-base"),
+                             ("https://gitlab.com/omkom/ailleurs.git", "")):
+            d = tempfile.mkdtemp()
+            subprocess.run(["git", "init", "-q", d], check=True, capture_output=True)
+            subprocess.run(["git", "-C", d, "remote", "add", "origin", url], check=True, capture_output=True)
+            assert extraire_repo(d) == attendu, f"{url} -> {extraire_repo(d)!r}, attendu {attendu!r}"
+        assert extraire_repo(tempfile.mkdtemp()) == "", "un dossier sans depot ne rend rien"
+        assert extraire_repo("/dossier/qui/n/existe/pas") == "", "un chemin absent ne leve pas"
+        print("✓ Test 6 : les trois formes de remote rendent owner/repo, le reste rend ''")
 
-        print("\nautotest ci.py : OK (6 cas couverts)")
+        # Test 7 : les chaines qui viennent de GitHub sont nettoyees de leurs caracteres de controle
+        piege = {"titre": "fix\x1b[2Jecran repeint", "jobs": [{"etape_echec": "test\x07\x00"}],
+                 "lignes": ["ligne\x1b]0;titre\x07", "garde\tla tabulation\n"]}
+        propre = nettoyer(piege)
+        assert "\x1b" not in propre["titre"] and propre["titre"] == "fix[2Jecran repeint", propre
+        assert propre["jobs"][0]["etape_echec"] == "test", propre
+        assert "\x1b" not in propre["lignes"][0] and "\x07" not in propre["lignes"][0]
+        assert propre["lignes"][1] == "garde\tla tabulation\n", "tabulation et saut de ligne conserves"
+        print("✓ Test 7 : caracteres de controle retires des chaines venues de GitHub")
+
+        print("\nautotest ci.py : OK (7 cas couverts)")
 
     finally:
         globals()["appel_gh"] = original_appel_gh

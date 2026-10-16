@@ -27,6 +27,12 @@ let ouvert = null       // run deplie (logs affiches)
 let aConfirmer = null   // run dont on a demande la relance, en attente du second clic
 let logs = {}           // id de run -> dernieres lignes de son log d'echec
 
+// Caracteres de controle C0/C1 : une ligne de log vient de GitHub, donc de quiconque sait
+// pousser une branche ou ouvrir une PR depuis un fork. Rendue telle quelle, une sequence
+// d'echappement repeint le terminal et peut masquer ce qu'on croit lire. ci.py nettoie tout
+// ce qu'il sort, mais ce log-ci est lu directement par `gh` : il se nettoie donc ici.
+const CONTROLE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g
+
 function duree(s) {
   if (!s && s !== 0) return ''
   if (s < 60) return s + 's'
@@ -60,7 +66,7 @@ async function relancer($, r, seulementEchoues) {
 async function voirLogs($, r) {
   const x = await $.process.run(['gh', 'run', 'view', String(r.id), '-R', r.repo, '--log-failed'], { timeoutMs: 60000 })
   const brut = (x.stdout || x.stderr || '').split('\n').filter((l) => l.trim())
-  logs[r.id] = brut.slice(-14).map((l) => l.slice(-200))
+  logs[r.id] = brut.slice(-14).map((l) => l.slice(-200).replace(CONTROLE, ''))
   if (!logs[r.id].length) logs[r.id] = ['aucune ligne de log rendue par gh (job encore en cours ?)']
   message = 'log de ' + r.workflow + ' : ' + logs[r.id].length + ' ligne(s)'
   $.ui.invalidate('ui.render')

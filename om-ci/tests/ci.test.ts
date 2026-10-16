@@ -34,7 +34,9 @@ function faux(on: any, appels: string[][]) {
   on('process.run', async (_: any, e: any) => {
     appels.push([...e.argv])
     const estCi = e.argv.some((a: string) => String(a).endsWith('ci.py'))
-    return { value: { exitCode: 0, stdout: estCi ? JSON.stringify(CI) : 'ligne de log 1\nligne de log 2', stderr: '' } } as never
+    // Le faux log porte une sequence d'echappement : c'est ce qu'un fork hostile peut y mettre.
+    const log = 'ligne de log 1\n\u001b[2Jligne de log 2\u0007'
+    return { value: { exitCode: 0, stdout: estCi ? JSON.stringify(CI) : log, stderr: '' } } as never
   })
   on('ui.open', async () => ({ value: undefined }) as never)
   on('ui.status', async () => ({ value: undefined }) as never)
@@ -84,7 +86,11 @@ test('le log d echec s affiche dans le pane, tronque', async ($, on) => {
   await ui.press({ key: 'v-38887267243' })
   await ui.press({ key: 'l-38887267243' })
   expect(appels.find(a => a.includes('--log-failed'))).toContain('38887267243')
-  expect(await ui.find({ type: 'Text', text: /ligne de log 2/ })).toBeDefined()
+  const l = await ui.find({ type: 'Text', text: /ligne de log 2/ })
+  expect(l).toBeDefined()
+  // une sequence d'echappement venue du log ne doit JAMAIS atteindre le terminal
+  expect((l as any).text).not.toContain('\u001b')
+  expect((l as any).text).not.toContain('\u0007')
   await ui.unmount()
 })
 
