@@ -12,7 +12,7 @@
 
 const PANE = 'om-propositions'
 const COMMANDES = ['next-sessions', 'propositions']
-const JOURS = '3'
+const JOURS = '3'   // fenetre du scrape de rattrapage seulement : la liste vit dans ~/.claude/propositions/propositions.jsonl
 const MODELE = 'haiku'
 const CATEGORIES = ['Production & risques', 'Outillage & gates', 'Contenu & SEO', 'Mesure & donnees',
   'Process & orchestration', 'Commercial & clients']
@@ -100,7 +100,7 @@ async function ouvrir($) {
   await $.ui.open({ id: PANE, title: 'Propositions', closeOnEscape: true })
   if (items.length === 0) await charger($)
   $.ui.invalidate('ui.render')
-  return { text: items.length + ' propositions sur ' + JOURS + ' jours — ' + statut }
+  return { text: items.length + ' propositions (fichier perenne) — ' + statut }
 }
 
 export function register(on) {
@@ -153,7 +153,7 @@ export function register(on) {
       txt('Unity', { bold: true, color: C.teal }), txt('  propositions', { dimColor: true }),
     ])
     const compteurs = txt(visibles.length + ' a lancer · ' + nP1 + ' P1 · ' + (items.length - visibles.length)
-      + ' doublons replies · ' + JOURS + ' jours', { dimColor: true })
+      + ' doublons replies · fichier perenne', { dimColor: true })
 
     const carte = (i) => {
       const k = classement[i.id] || {}
