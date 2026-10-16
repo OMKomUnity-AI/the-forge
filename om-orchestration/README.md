@@ -10,14 +10,46 @@ make the decisions.
 ## What it shows
 
 - counters: in progress, awaiting review, blocked, done, planned
+- every live session that has not closed yet, journal or not — with its last word and its context
 - one block per task, newest state first, with the session that owns it and how long it has run
 - blocked and awaiting-review sections first — they are the ones that need you
 - the last six journal entries
 
+## What you can do from it
+
+The pane is not a read-only dashboard: every decision you can take on a running wave is one
+press away, and **every one of them works with buttons alone** — so it works from the phone too.
+
+- **answer a pending question** — the options the session offered, or free text where the
+  surface draws a field
+- **settle a review** — validate, or send it back (with a reason where there is a field)
+- **move a task** — mark it done or blocked, add a note to the journal
+- **arbitrate the model before launch** — haiku, sonnet or opus on a planned task, then launch
+  it in a Terminal tab (two presses: the prompt is shown before anything autonomous runs on it)
+- **steer a live session** — ask it for a status point, to commit, or to close; or send it a
+  free-text instruction. The pane has no messenger of its own: it asks the session hosting it,
+  the orchestrator, to pass the message on
+- **stop or respawn a background session**
+- **rewrite the rendered output**, pull Google Chat answers, refresh
+
+Two honest limits, verified on 2026-10-16:
+
+- the `claude` CLI exposes `stop`, `respawn`, `logs` and `attach` for **background** sessions
+  only. An interactive session is steered by instruction, not by the CLI — so the pane does not
+  draw a button that would fail.
+- the **mobile** app draws no `Input` and no `Select` (type `Elements`, `claude-code`), and
+  `$.ui.resolve` hands back an `Input` constructor anyway: the element is dropped silently. A
+  field there is a mute hole, so the pane names the gap instead and keeps every action on a
+  button.
+
 ## How it works
 
 Every session writes to one **append-only** journal, `.claude/orchestration/events.jsonl`.
-The mod only ever **reads** it, and recomputes the state on each draw.
+The mod **reads** it on each draw, and recomputes the state from it.
+
+What the pane writes, it writes as `PROPRIETAIRE` — never under a session's name. That is the
+rule that keeps the journal honest: a session says what it did, the owner says what he decided.
+Reading `done` under the name of a session that never said it would be the one costly lie here.
 
 Append-only is the point: several sessions write at the same time, and two sessions
 rewriting one state file would lose each other's events. A line half-written by another

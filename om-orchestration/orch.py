@@ -284,6 +284,77 @@ def sessions_terminees(evenements: list) -> list:
     return sorted(s for s, k in par.items() if s not in attente and all(x in ("done", "review-ok") for x in k))
 
 
+def vivantes() -> list:
+    """Toutes les sessions Claude Code vivantes (~/.claude/sessions), journal ou non, avec un
+    drapeau `close` : vrai si le dernier /omk:close a ete suivi de son bloc « Prochaines sessions
+    recommandees » ET qu'aucun message utilisateur n'est arrive depuis. Resultat mis en cache par
+    (taille, mtime) du transcript : le pane rappelle snapshot toutes les 2 s, et certains
+    transcripts depassent 20 Mo."""
+    racine = Path.home() / ".claude"
+    cache_f = racine / "orchestration" / "vivantes-cache.json"
+    try:
+        cache = json.loads(cache_f.read_text())
+    except Exception:
+        cache = {}
+    neuf = {}
+    for f in sorted((racine / "sessions").glob("*.json")):
+        try:
+            d = json.loads(f.read_text())
+            sid = d["sessionId"]
+        except Exception:
+            continue
+        tr = next(iter((racine / "projects").glob(f"*/{sid}.jsonl")), None)
+        info = {"close": False, "dernier": "", "maj": d.get("updatedAt")}
+        if tr:
+            st = tr.stat()
+            cle = f"{st.st_size}:{int(st.st_mtime)}"
+            if cache.get(sid, {}).get("cle") == cle:
+                info = cache[sid]["info"]
+            else:
+                i_close = i_bloc = i_user = -1
+                dernier = ""
+                for n, ligne in enumerate(tr.open(errors="ignore")):
+                    if "omk:close" in ligne and '"role":"user"' in ligne.replace(" ", ""):
+                        i_close = n
+                    try:
+                        m = json.loads(ligne).get("message") or {}
+                    except Exception:
+                        continue
+                    c = m.get("content")
+                    if isinstance(c, list):
+                        c = " ".join(x.get("text", "") for x in c if isinstance(x, dict) and x.get("type") == "text")
+                    if not isinstance(c, str) or not c.strip():
+                        continue
+                    if m.get("role") == "assistant":
+                        dernier = c.strip().replace("\n", " ")[:160]
+                        if "Prochaines sessions recommand" in c:
+                            i_bloc = n
+                    elif m.get("role") == "user" and not c.lstrip().startswith(("<", "Base directory for this skill", "This session is being continued")):
+                        i_user = n
+                info = {"close": i_bloc >= 0 and i_bloc > i_user,
+                        "dernier": dernier, "maj": d.get("updatedAt")}
+                neuf[sid] = {"cle": cle, "info": info}
+                continue
+            neuf[sid] = cache[sid]
+        neuf.setdefault(sid, {"cle": "", "info": info})
+    try:
+        cache_f.write_text(json.dumps({**cache, **neuf}))
+    except Exception:
+        pass
+    res = []
+    for f in sorted((racine / "sessions").glob("*.json")):
+        try:
+            d = json.loads(f.read_text())
+        except Exception:
+            continue
+        info = (neuf.get(d.get("sessionId")) or {}).get("info", {})
+        res.append({"nom": d.get("name", d.get("sessionId", "")[:8]), "id": d.get("sessionId", ""),
+                    "kind": d.get("kind", ""), "statut": d.get("status", ""),
+                    "cwd": Path(d.get("cwd", "")).name, "maj": d.get("updatedAt"),
+                    "close": bool(info.get("close")), "dernier": info.get("dernier", "")})
+    return res
+
+
 def lancees(evenements: list) -> set:
     """Sessions qui ont au moins un evenement au-dela du `planned` pose par l'orchestratrice."""
     return {ev["session"] for ev in evenements if ev["kind"] not in ("planned", "answer")}
@@ -346,6 +417,20 @@ def lancer(session: str, task: str, essai: bool = False, ident: str = "") -> str
                         "-e", 'tell application "Terminal" to activate'], check=True)
         ajouter(session, task, "note", "lancee depuis /orch", model=evs[-1].get("model", ""))
     return str(sh)
+
+
+def changer_modele(session: str, task: str, model: str, ident: str = "") -> dict:
+    """Repose le dernier `planned` lancable de (session, task) avec un autre modele, avant son
+    lancement. Le journal est append-only : on ne reecrit pas l'evenement, on en pose un nouveau
+    qui recopie son depot et son prompt tels quels — `lancer` prend le plus recent, et l'ancien
+    reste lisible. Le pane s'en sert pour arbitrer haiku/sonnet/opus au moment du lancement."""
+    evs = [e for e in lire() if e["kind"] == "planned" and e["session"] == session
+           and e["task"] == task and e.get("prompt") and e.get("cwd") and (not ident or e.get("id") == ident)]
+    if not evs:
+        raise SystemExit(f"aucune tache planifiee pour {session} {task}")
+    p = evs[-1]
+    return ajouter(session, task, "planned", p.get("msg", ""), model=model,
+                   cwd=p.get("cwd", ""), prompt=p.get("prompt", ""))
 
 
 # Questions <-> Google Chat (spec : docs/superpowers/specs/2026-10-15-orch-questions-google-chat.md).
@@ -726,11 +811,16 @@ def main() -> int:
     pla.add_argument("--task", required=True)
     pla.add_argument("--essai", action="store_true", help="ecrit le lanceur sans ouvrir le Terminal")
     pla.add_argument("--id", default="", help="lance exactement l'evenement planned de cet id")
+    pmo = sub.add_parser("modele", help="repose une tache planifiee avec un autre modele")
+    pmo.add_argument("--session", required=True)
+    pmo.add_argument("--task", required=True)
+    pmo.add_argument("--model", required=True)
+    pmo.add_argument("--id", default="", help="repose exactement l'evenement planned de cet id")
     sub.add_parser("chat-pull", help="recupere les reponses donnees dans Google Chat (JSON)")
     sub.add_parser("snapshot", help="JSON pour le pane : journal, contexte par session, questions")
 
     a = p.parse_args()
-    if a.cmd in ("snapshot", "status", "render", "lancer", "chat-pull"):
+    if a.cmd in ("snapshot", "status", "render", "lancer", "chat-pull", "modele"):
         lire_pointeur()
     if a.cmd == "chat-pull":
         print(json.dumps(chat_pull(), ensure_ascii=False))
@@ -738,12 +828,18 @@ def main() -> int:
     if a.cmd == "lancer":
         print(lancer(a.session, a.task, a.essai, a.id))
         return 0
+    if a.cmd == "modele":
+        ev = changer_modele(a.session, a.task, a.model, a.id)
+        ecrire_rendu()
+        print(f"[orch] {a.session} · {a.task} · planned → {a.model} (id {ev.get('id')})")
+        return 0
     if a.cmd == "snapshot":
         ev = lire()
         print(json.dumps({"journal": str(chemin_etat()), "out": str(chemin_sortie()),
                           "existe": chemin_etat().exists(), "evenements": ev,
                           "contextes": contextes(ev), "questions": questions_en_attente(ev),
-                          "terminees": sessions_terminees(ev), "lancees": sorted(lancees(ev))},
+                          "terminees": sessions_terminees(ev), "lancees": sorted(lancees(ev)),
+                          "vivantes": vivantes()},
                          ensure_ascii=False))
         return 0
     if a.cmd == "log":
@@ -862,6 +958,20 @@ def _autotest() -> None:
             except SystemExit:
                 pass
         assert (Path(tmp) / "lanc" / "s6.txt").read_text() == 'Tu es "s6".'
+        # changer de modele avant lancement : un evenement de plus (append-only), depot et prompt
+        # recopies tels quels, et `lancer` prend bien le plus recent
+        ajouter("s10", "#10", "planned", "a lancer", model="haiku", cwd="/tmp/depot", prompt="Tu es s10.")
+        avant = len(lire())
+        neuf = changer_modele("s10", "#10", "sonnet")
+        assert len(lire()) == avant + 1, "le journal doit rester append-only"
+        assert neuf["model"] == "sonnet" and neuf["prompt"] == "Tu es s10." and neuf["cwd"] == "/tmp/depot", neuf
+        assert "exec claude --model sonnet" in Path(lancer("s10", "#10", essai=True)).read_text(), \
+            "lancer doit prendre le planned repose"
+        try:
+            changer_modele("inconnue", "#0", "sonnet")
+            raise AssertionError("changer_modele accepte une tache inexistante")
+        except SystemExit:
+            pass
         # Chat : une reponse recue s'ecrit une fois, et jamais pour une question deja repondue
         global chat_post
         q9 = ajouter("s9", "#9", "question", "Via Chat ?", options=["oui", "non"])

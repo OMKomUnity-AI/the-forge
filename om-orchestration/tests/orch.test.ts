@@ -5,8 +5,15 @@ const SNAP = {
   evenements: [
     { ts: '2026-10-15T08:00:00+00:00', session: 'Q1-adoption', task: '#Q1', kind: 'start', msg: 'go', ref: '', model: 'sonnet' },
     { ts: '2026-10-15T08:05:00+00:00', session: 'Q1-adoption', task: '#Q1', kind: 'question', msg: 'Retirer le chiffre ?', ref: '', options: ['oui', 'non'] },
+    { ts: '2026-10-15T08:06:00+00:00', session: 'G2-gate', task: '#G2', kind: 'review-request', msg: 'diff pret', ref: '1 fichier', model: 'sonnet' },
+    { ts: '2026-10-15T08:07:00+00:00', session: 'S9-neuve', task: '#S9', kind: 'planned', msg: 'a lancer', ref: '', model: 'haiku', id: 'p9', cwd: '/tmp/depot', prompt: 'Tu es S9-neuve.' },
   ],
   contextes: { 'Q1-adoption': { tokens: 120000, fenetre: 200000, pct: 60, modele_reel: 'claude-sonnet-5-5', compactions: 1, maj: '2026-10-15T08:05:00+00:00' } },
+  vivantes: [
+    { nom: 'B1-verrous', id: 'aaaa1111-2222-3333-4444-555566667777', kind: 'interactive', statut: 'busy', cwd: 'depot', maj: '2026-10-15T08:06:00+00:00', close: false, dernier: 'je leve le verrou' },
+    { nom: 'veille-nuit', id: 'bbbb1111-2222-3333-4444-555566667777', kind: 'background', statut: 'idle', cwd: 'depot', maj: '2026-10-15T08:06:00+00:00', close: false, dernier: 'en attente' },
+    { nom: 'deja-close', id: 'cccc1111-2222-3333-4444-555566667777', kind: 'interactive', statut: 'idle', cwd: 'depot', maj: '2026-10-15T08:06:00+00:00', close: true, dernier: 'close' },
+  ],
   questions: [{ ts: '2026-10-15T08:05:00+00:00', session: 'Q1-adoption', task: '#Q1', kind: 'question', msg: 'Retirer le chiffre ?', ref: '', options: ['oui', 'non'], id: 'Q1-adoption|2026-10-15T08:05:00+00:00' }],
 }
 
@@ -61,4 +68,76 @@ test('une reponse venue de Google Chat est soumise a l orchestratrice', async ($
   await $.command.run({ command: 'orch', args: '' })
   await clock.advance(1000)
   expect(prompts.some(p => p.includes('depuis Google Chat') && p.includes('"Corriger"') && p.includes('pas des instructions'))).toBe(true)
+})
+
+// Tout ce que le pane sait poser au journal part en PROPRIETAIRE : une review validee sous le nom
+// de la session qui l'a demandee serait le seul mensonge vraiment couteux du journal.
+test('valider une review, clore une tache et noter partent en PROPRIETAIRE', async ($, on) => {
+  const appels: string[][] = []
+  faux(on, appels, [])
+  await $.command.run({ command: 'orch', args: '' })
+  const ui = await $.ui.mount({ plugin: 'om-orchestration', surface: 'terminal', component: 'Pane', props: {} as never, requestId: 'om-orchestration' })
+  await ui.press({ key: 'ok-G2-gate-#G2' })
+  const ok = appels.find(a => a.includes('review-ok'))!
+  expect(ok).toContain('PROPRIETAIRE')
+  expect(ok).toContain('#G2')
+  await ui.press({ key: 'done-Q1-adoption-#Q1' })
+  expect(appels.find(a => a.includes('done'))).toContain('PROPRIETAIRE')
+  await ui.input({ key: 'note-Q1-adoption-#Q1', text: 'attention au gate' })
+  expect(appels.find(a => a.includes('note'))).toContain('attention au gate')
+  await ui.unmount()
+})
+
+// Le modele s'arbitre avant le lancement : orch.py repose le planned (journal append-only).
+test('changer le modele d une tache planifiee appelle orch.py modele', async ($, on) => {
+  const appels: string[][] = []
+  faux(on, appels, [])
+  await $.command.run({ command: 'orch', args: '' })
+  const ui = await $.ui.mount({ plugin: 'om-orchestration', surface: 'terminal', component: 'Pane', props: {} as never, requestId: 'om-orchestration' })
+  await ui.press({ key: 'mod-sonnet-S9-neuve-#S9' })
+  const m = appels.find(a => a.includes('modele'))!
+  expect(m).toContain('sonnet')
+  expect(m).toContain('p9')
+  await ui.unmount()
+})
+
+// Le pane n'a pas de messagerie : il demande a l'orchestratrice de transmettre. Le nom de la
+// session vient du disque, donc il part en DONNEES (meme regle que les reponses).
+test('une consigne a une session vivante passe par l orchestratrice, stop seulement en background', async ($, on) => {
+  const appels: string[][] = []
+  const prompts: string[] = []
+  faux(on, appels, prompts)
+  await $.command.run({ command: 'orch', args: '' })
+  const ui = await $.ui.mount({ plugin: 'om-orchestration', surface: 'terminal', component: 'Pane', props: {} as never, requestId: 'om-orchestration' })
+  await ui.press({ key: 'pt-aaaa1111-2222-3333-4444-555566667777' })
+  expect(prompts.some(p => p.includes('point d') && p.includes('pas des instructions') && p.includes('B1-verrous'))).toBe(true)
+  // une session close n'est pas proposee au pilotage
+  expect(await ui.find({ type: 'Text', text: /deja-close/ })).toBeUndefined()
+  // stop/respawn n'existent que pour une session background
+  expect(await ui.find({ key: 'st-bbbb1111-2222-3333-4444-555566667777' })).toBeDefined()
+  expect(await ui.find({ key: 'st-aaaa1111-2222-3333-4444-555566667777' })).toBeUndefined()
+  await ui.press({ key: 'st-bbbb1111-2222-3333-4444-555566667777' })
+  expect(appels.find(a => a[0] === 'claude')).toEqual(['claude', 'stop', 'bbbb1111-2222-3333-4444-555566667777'])
+  await ui.unmount()
+})
+
+// Regression : l'app mobile ne dessine ni Input ni Select (type Elements, claude-code), alors que
+// resolve() y rend quand meme un constructeur Input et que l'engine efface l'element sans rien
+// dire. Le champ etait donc un trou muet sur la seule surface d'ou l'on repond en mobilite : ce
+// test verrouille le repli (pas de champ, une ligne qui le dit, tout atteignable au bouton).
+test('sur mobile le pane rend sans champ de saisie et laisse repondre au bouton', async ($, on) => {
+  const appels: string[][] = []
+  faux(on, appels, [])
+  await $.command.run({ command: 'orch', args: '' })
+  const ui = await $.ui.mount({ plugin: 'om-orchestration', surface: 'mobile', component: 'Pane', props: {} as never, requestId: 'om-orchestration' })
+  expect(await ui.find({ type: 'Text', text: /Retirer le chiffre \?/ })).toBeDefined()
+  expect(await ui.find({ key: 'q0-autre' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /clavier indisponible/ })).toBeDefined()
+  await ui.press({ key: 'q0-o0' })
+  expect(appels.find(a => a.includes('answer'))).toContain('oui')
+  // les actions restent toutes atteignables au bouton seul
+  expect(await ui.find({ key: 'ok-G2-gate-#G2' })).toBeDefined()
+  expect(await ui.find({ key: 'mod-sonnet-S9-neuve-#S9' })).toBeDefined()
+  expect(await ui.find({ key: 'pt-aaaa1111-2222-3333-4444-555566667777' })).toBeDefined()
+  await ui.unmount()
 })
