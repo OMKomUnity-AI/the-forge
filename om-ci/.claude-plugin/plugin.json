@@ -1,0 +1,6 @@
+{
+  "name": "om-ci",
+  "version": "0.1.0",
+  "description": "Un pane lateral qui suit en direct la CI GitHub de tous les depots ouverts : runs, jobs, etape en echec",
+  "author": { "name": "OMKomUnity", "url": "https://omkomunity.ai" }
+}

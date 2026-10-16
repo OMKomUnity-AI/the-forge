@@ -1,0 +1,1 @@
+{"name": "om-forge", "owner": {"name": "OMKomUnity"}, "plugins": [{"name": "om-orchestration", "source": "./om-orchestration", "description": "Pane /orch"}, {"name": "om-propositions", "source": "./om-propositions", "description": "Propositions des /close"}, {"name": "om-ci", "source": "./om-ci", "description": "Pane /ci : la CI GitHub en direct"}]}
