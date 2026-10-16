@@ -145,7 +145,7 @@ export function register(on) {
 
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     if (e.requestId !== PANE) return next(e)
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const { Box, Text, Button, Link } = $.ui.resolve(e)
     const ligne = (children) => Box({ flexDirection: 'row', children })
     const txt = (s, props = {}) => Text({ ...props, children: [s] })
 
@@ -183,6 +183,7 @@ export function register(on) {
           ligne([
             txt((p < 9 ? 'P' + p : '··') + ' ', { color: COULEUR_P[p] || C.muted, bold: true }),
             Button({ key: 'v-' + i.id, label: i.titre.slice(0, 70), onPress: () => { ouvert = ouvert === i.id ? null : i.id; $.ui.invalidate('ui.render') } }),
+            ...(i.lien && Link ? [txt(' '), Link({ key: 'l-' + i.id, href: i.lien, label: '↗ session' })] : []),
           ]),
           txt('   ' + i.projet + ' · ' + i.session + ' · ' + (i.mode ? 'make ' + i.mode : 'sans prompt') + ' · ' + i.ts.slice(5, 10) + (i.copiee ? ' · copiee' : '')
             + (plus.length ? '  +' + plus.length + ' (' + plus.join(', ') + ')' : ''), { dimColor: true }),

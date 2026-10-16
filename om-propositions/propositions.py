@@ -194,6 +194,19 @@ def marquer_lancements(store: dict, racine: Path, jours: float) -> int:
     return n
 
 
+def liens() -> dict:
+    """sessionId -> URL claude.ai/code de la session, pour celles encore vivantes (bridgeSessionId)."""
+    out = {}
+    for f in (Path.home() / ".claude" / "sessions").glob("*.json"):
+        try:
+            d = json.loads(f.read_text())
+            if d.get("bridgeSessionId") and d["bridgeSessionId"] != "None":
+                out[d["sessionId"]] = "https://claude.ai/code/" + d["bridgeSessionId"]
+        except (OSError, ValueError, KeyError):
+            pass
+    return out
+
+
 def collecter(racine: Path, jours: float) -> list:
     limite = time.time() - jours * 86400
     vus = {}
@@ -343,6 +356,12 @@ if __name__ == "__main__":
     else:
         # Mode défaut : JSON avec tout le store
         items_tries = sorted((v for v in store.values() if not v.get("supprimee")), key=lambda x: x.get("ts", ""), reverse=True)
+        # Lien direct vers la session emettrice : sa page claude.ai/code si elle tourne encore,
+        # sinon son transcript local (file://). Calcule a la sortie, pas range dans le fichier perenne.
+        pont = liens()
+        for it in items_tries:
+            tr = it.get("transcript", "")
+            it["lien"] = pont.get(Path(tr).stem) or ("file://" + tr if tr else "")
         print(json.dumps({"genere": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                           "jours": a.jours,
                           "items": items_tries,
