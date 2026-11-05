@@ -66,8 +66,7 @@ CYAN='\033[36m'; GREEN='\033[32m'; YELLOW='\033[33m'; RED='\033[31m'; MAGENTA='\
 # (contrairement aux hooks, la statusline reçoit .model.id à jour à chaque tour).
 MODEL_LABEL="${CYAN}[$MODEL]${RESET}"
 
-# Chat context — nom + ID court (préfixe 8 chars, format compact)
-CHAT_LABEL="${CYAN}${SESSION_NAME_SHORT}${RESET} #${SESSION_ID_SHORT}"
+# Chat context — nom + ID court (préfixe 8 chars, format compact, sans interprétation ANSI)
 case "$MODEL_ID" in
     *opus*|*fable*)
         case "$EFFORT" in
@@ -235,5 +234,5 @@ fi
 # domaine Cmd-cliquable ; couleur violette = accent signature de la charte.
 OM_BRAND="🕉️ ${MAGENTA}omkomunity.ai${RESET}"
 
-echo -e "${CHAT_LABEL} | ${OM_BRAND}"
+printf '%b%s%b #%s | %b\n' "$CYAN" "$SESSION_NAME_SHORT" "$RESET" "$SESSION_ID_SHORT" "$OM_BRAND"
 echo -e "${MODEL_LABEL} 📁 ${DIR##*/}${BRANCH_LINE} | ${BAR_COLOR}${BAR}${RESET} ${PCT}%${TTL_REMAINING} | ${YELLOW}🪙 ${TOKENS_FMT}${RESET} | ⏱️ ${MINS}m ${SECS}s${RL_LINE}${GH_CONTEXT}"
