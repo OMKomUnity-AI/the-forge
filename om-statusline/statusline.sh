@@ -8,6 +8,9 @@ DIR=$(echo "$input" | jq -r '.workspace.current_dir')
 PCT=$(echo "$input" | jq -r '.context_window.used_percentage // 0' | cut -d. -f1)
 DURATION_MS=$(echo "$input" | jq -r '.cost.total_duration_ms // 0')
 SESSION_ID=$(echo "$input" | jq -r '.session_id // "nosession"')
+SESSION_NAME=$(echo "$input" | jq -r '.session.name // .session.title // "Chat"')
+SESSION_NAME_SHORT=$(printf "%.20s" "$SESSION_NAME")
+SESSION_ID_SHORT="${SESSION_ID:0:8}"
 MAIN_IN=$(echo "$input" | jq -r '.context_window.total_input_tokens // 0')
 MAIN_OUT=$(echo "$input" | jq -r '.context_window.total_output_tokens // 0')
 
@@ -60,6 +63,9 @@ CYAN='\033[36m'; GREEN='\033[32m'; YELLOW='\033[33m'; RED='\033[31m'; MAGENTA='\
 # Indicateur live modèle/effort coûteux — pas d'angle mort de cache ici
 # (contrairement aux hooks, la statusline reçoit .model.id à jour à chaque tour).
 MODEL_LABEL="${CYAN}[$MODEL]${RESET}"
+
+# Chat context — nom + ID court (préfixe 8 chars, format compact)
+CHAT_LABEL="${CYAN}${SESSION_NAME_SHORT}${RESET} #${SESSION_ID_SHORT}"
 case "$MODEL_ID" in
     *opus*|*fable*)
         case "$EFFORT" in
@@ -227,4 +233,5 @@ fi
 # domaine Cmd-cliquable ; couleur violette = accent signature de la charte.
 OM_BRAND="🕉️ ${MAGENTA}omkomunity.ai${RESET}"
 
-echo -e "${MODEL_LABEL} 📁 ${DIR##*/}${BRANCH_LINE} | ${BAR_COLOR}${BAR}${RESET} ${PCT}%${TTL_REMAINING} | ${YELLOW}🪙 ${TOKENS_FMT}${RESET} | ⏱️ ${MINS}m ${SECS}s${RL_LINE}${GH_CONTEXT} | ${OM_BRAND}"
+echo -e "${CHAT_LABEL} | ${OM_BRAND}"
+echo -e "${MODEL_LABEL} 📁 ${DIR##*/}${BRANCH_LINE} | ${BAR_COLOR}${BAR}${RESET} ${PCT}%${TTL_REMAINING} | ${YELLOW}🪙 ${TOKENS_FMT}${RESET} | ⏱️ ${MINS}m ${SECS}s${RL_LINE}${GH_CONTEXT}"
