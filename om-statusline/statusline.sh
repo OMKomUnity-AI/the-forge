@@ -9,6 +9,8 @@ PCT=$(echo "$input" | jq -r '.context_window.used_percentage // 0' | cut -d. -f1
 DURATION_MS=$(echo "$input" | jq -r '.cost.total_duration_ms // 0')
 SESSION_ID=$(echo "$input" | jq -r '.session_id // "nosession"')
 SESSION_NAME=$(echo "$input" | jq -r '.session.name // .session.title // "Chat"')
+# Nettoyer les caractères de contrôle (prévention injection ANSI)
+SESSION_NAME=$(printf '%s' "$SESSION_NAME" | tr -d '\000-\037\177')
 SESSION_NAME_SHORT=$(printf "%.20s" "$SESSION_NAME")
 SESSION_ID_SHORT="${SESSION_ID:0:8}"
 MAIN_IN=$(echo "$input" | jq -r '.context_window.total_input_tokens // 0')
